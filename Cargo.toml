@@ -1,0 +1,67 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/config-core",
+    "crates/discovery",
+    "crates/auth",
+    "crates/app",
+    "crates/tui",
+    "crates/gui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+authors = ["小紅"]
+repository = "https://github.com/nickel/opencode-provider-manager"
+
+[workspace.dependencies]
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# JSONC support
+jsonc-parser = { version = "0.26", features = ["cst"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# GUI
+egui = "0.31"
+eframe = { version = "0.31", features = ["default_fonts"] }
+
+# Paths
+dirs = "6"
+
+# Testing
+mockall = "0.13"
+tokio-test = "0.4"
+pretty_assertions = "1"
+tempfile = "3"
+async-trait = "0.1"
+
+# Internal crates
+config-core = { path = "crates/config-core" }
+discovery = { path = "crates/discovery" }
+auth = { path = "crates/auth" }
+app = { path = "crates/app" }

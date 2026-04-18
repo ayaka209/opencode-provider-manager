@@ -1,0 +1,21 @@
+[package]
+name = "opencode-provider-manager-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "opm-gui"
+path = "src/main.rs"
+
+[dependencies]
+app = { workspace = true }
+config-core = { workspace = true }
+discovery = { workspace = true }
+auth = { workspace = true }
+egui = { workspace = true }
+eframe = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
