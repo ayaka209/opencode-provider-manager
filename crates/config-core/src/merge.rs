@@ -182,7 +182,7 @@ impl Mergeable for ServerConfig {
             port: other.port.or(self.port),
             hostname: other.hostname.or(self.hostname),
             mdns: other.mdns.or(self.mdns),
-            mdnsDomain: other.mdnsDomain.or(self.mdnsDomain),
+            mdns_domain: other.mdns_domain.or(self.mdns_domain),
             cors: other.cors.or(self.cors),
         }
     }
@@ -246,7 +246,7 @@ impl Mergeable for AgentConfig {
             model: other.model.or(self.model),
             variant: other.variant.or(self.variant),
             temperature: other.temperature.or(self.temperature),
-            topP: other.topP.or(self.topP),
+            top_p: other.top_p.or(self.top_p),
             prompt: other.prompt.or(self.prompt),
             description: other.description.or(self.description),
             disable: other.disable.or(self.disable),

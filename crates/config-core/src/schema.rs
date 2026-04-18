@@ -136,7 +136,7 @@ pub struct ServerConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mdns: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub mdnsDomain: Option<String>,
+    pub mdns_domain: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cors: Option<Vec<String>>,
 }
@@ -260,7 +260,7 @@ pub struct AgentConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub topP: Option<f64>,
+    pub top_p: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
