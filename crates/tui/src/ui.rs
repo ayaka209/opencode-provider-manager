@@ -128,13 +128,16 @@ pub fn render_provider_list(frame: &mut Frame, state: &AppState, app: &App) {
         ConfigLayer::Project => "Project",
         ConfigLayer::Custom => "Custom",
     };
-    let dirty = if app.dirty { " [unsaved]" } else { "" };
+    let dirty = if state.dirty { " ●" } else { "" };
     let status =
-        format!(" Layer: {layer}{dirty} | ?: Help | q: Quit | j/k: Navigate | Enter: Select ");
+        format!(" Layer: {layer}{dirty} | s:Save | d:Delete | r:Refresh | ?:Help | q:Quit | j/k:Nav | Enter:Select ");
     frame.render_widget(
         Paragraph::new(status).style(Style::default().fg(colors::DIM)),
         status_area,
     );
+
+    // Error bar (if any)
+    render_error_bar(frame, &app.error_message);
 }
 
 /// Render the merged config view.
@@ -402,6 +405,18 @@ pub fn render_help(frame: &mut Frame) {
             Span::styled("  Enter    ", Style::default().fg(colors::PRIMARY)),
             Span::raw("Select item"),
         ]),
+        Line::from(vec![
+            Span::styled("  s        ", Style::default().fg(colors::PRIMARY)),
+            Span::raw("Save config"),
+        ]),
+        Line::from(vec![
+            Span::styled("  d        ", Style::default().fg(colors::PRIMARY)),
+            Span::raw("Delete selected provider"),
+        ]),
+        Line::from(vec![
+            Span::styled("  r        ", Style::default().fg(colors::PRIMARY)),
+            Span::raw("Refresh configs from disk"),
+        ]),
     ];
 
     let help = Paragraph::new(help_text)
@@ -412,4 +427,55 @@ pub fn render_help(frame: &mut Frame) {
         )
         .wrap(Wrap { trim: false });
     frame.render_widget(help, frame.area());
+}
+
+/// Render a confirmation dialog for provider deletion.
+pub fn render_confirm_delete(frame: &mut ratatui::Frame, provider_id: &str) {
+    let size = frame.area();
+    let dialog_width = 50.min(size.width.saturating_sub(4));
+    let dialog_height = 5;
+    let x = (size.width.saturating_sub(dialog_width)) / 2;
+    let y = (size.height.saturating_sub(dialog_height)) / 2;
+
+    let dialog_area = ratatui::layout::Rect::new(x, y, dialog_width, dialog_height);
+
+    let dialog_text = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!(" Delete provider \"{}\"?", provider_id),
+            Style::default().fg(colors::ERROR),
+        )),
+        Line::from(""),
+        Line::from(Span::raw(" y: Confirm   n: Cancel")),
+    ];
+
+    let dialog = Paragraph::new(dialog_text)
+        .block(
+            Block::bordered()
+                .title("Confirm Delete")
+                .border_style(Style::default().fg(colors::ERROR)),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(dialog, dialog_area);
+}
+
+/// Render an error bar at the bottom of the screen.
+fn render_error_bar(frame: &mut ratatui::Frame, error_message: &Option<String>) {
+    if let Some(msg) = error_message {
+        let size = frame.area();
+        let bar_height = 1.min(size.height);
+        let bar_area = ratatui::layout::Rect::new(
+            0,
+            size.height.saturating_sub(bar_height + 1),
+            size.width,
+            bar_height,
+        );
+
+        let error_text = Paragraph::new(format!(" Error: {msg}")).style(
+            Style::default()
+                .fg(colors::ERROR)
+                .add_modifier(Modifier::BOLD),
+        );
+        frame.render_widget(error_text, bar_area);
+    }
 }

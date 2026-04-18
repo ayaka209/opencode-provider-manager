@@ -18,8 +18,6 @@ pub struct App {
     pub selected_index: usize,
     /// Error message to display, if any.
     pub error_message: Option<String>,
-    /// Whether config has unsaved changes.
-    pub dirty: bool,
 }
 
 /// Current UI mode.
@@ -39,6 +37,8 @@ pub enum AppMode {
     ConfigDetail,
     /// Help overlay.
     Help,
+    /// Confirm delete provider dialog.
+    ConfirmDelete(String),
 }
 
 impl App {
@@ -50,7 +50,6 @@ impl App {
             selected_provider: None,
             selected_index: 0,
             error_message: None,
-            dirty: false,
         }
     }
 
@@ -81,7 +80,7 @@ impl App {
 
     /// Render the current UI.
     pub fn render(&self, frame: &mut ratatui::Frame, state: &AppState) {
-        match self.mode {
+        match &self.mode {
             AppMode::MergedView => ui::render_merged_view(frame, state, self),
             AppMode::SplitView => ui::render_split_view(frame, state, self),
             AppMode::ProviderList => ui::render_provider_list(frame, state, self),
@@ -89,6 +88,10 @@ impl App {
             AppMode::ModelSelector => ui::render_model_selector(frame, state, self),
             AppMode::ConfigDetail => ui::render_config_detail(frame, state, self),
             AppMode::Help => ui::render_help(frame),
+            AppMode::ConfirmDelete(provider_id) => {
+                ui::render_provider_list(frame, state, self);
+                ui::render_confirm_delete(frame, provider_id);
+            }
         }
     }
 }
@@ -96,9 +99,13 @@ impl App {
 /// Run the main TUI event loop.
 pub async fn run(
     mut terminal: ratatui::DefaultTerminal,
-    state: AppState,
+    mut state: AppState,
+    split: bool,
 ) -> Result<()> {
     let mut app = App::new();
+    if split {
+        app.mode = AppMode::SplitView;
+    }
 
     loop {
         if app.should_quit {
@@ -112,7 +119,7 @@ pub async fn run(
             if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
                 // Only handle key press events (crossterm 0.28+ sends Press/Release/Repeat)
                 if key.kind == crossterm::event::KeyEventKind::Press {
-                    handle_key_event(key, &mut app, &state);
+                    handle_key_event(key, &mut app, &mut state);
                 }
             }
         }
@@ -122,8 +129,33 @@ pub async fn run(
 }
 
 /// Handle a keyboard event.
-fn handle_key_event(key: crossterm::event::KeyEvent, app: &mut App, _state: &AppState) {
+fn handle_key_event(key: crossterm::event::KeyEvent, app: &mut App, state: &mut AppState) {
     use crossterm::event::KeyCode;
+
+    // Clear error on any keypress
+    let had_error = app.error_message.is_some();
+    if had_error {
+        app.error_message = None;
+    }
+
+    // Handle confirm delete mode separately
+    if let AppMode::ConfirmDelete(ref provider_id) = app.mode {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                let id = provider_id.clone();
+                if let Err(e) = state.remove_provider(&id, state.edit_layer) {
+                    app.error_message = Some(format!("Failed to remove provider: {e}"));
+                }
+                app.mode = AppMode::ProviderList;
+                app.selected_provider = None;
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                app.mode = AppMode::ProviderList;
+            }
+            _ => {}
+        }
+        return;
+    }
 
     // Global keybindings
     match key.code {
@@ -147,19 +179,39 @@ fn handle_key_event(key: crossterm::event::KeyEvent, app: &mut App, _state: &App
         KeyCode::Char('a') => app.on_event(AppEvent::SwitchMode(AppMode::AuthStatus)),
         KeyCode::Char('m') => app.on_event(AppEvent::SwitchMode(AppMode::ModelSelector)),
         KeyCode::Char('c') => app.on_event(AppEvent::SwitchMode(AppMode::ConfigDetail)),
+        KeyCode::Char('s') => {
+            // Save current config
+            if let Err(e) = state.save(state.edit_layer) {
+                app.error_message = Some(format!("Save failed: {e}"));
+            }
+        }
+        KeyCode::Char('r') => {
+            // Refresh configs from disk
+            if let Err(e) = state.load_configs() {
+                app.error_message = Some(format!("Refresh failed: {e}"));
+            }
+        }
+        KeyCode::Char('d') => {
+            // Delete selected provider (with confirmation)
+            if app.mode == AppMode::ProviderList {
+                let provider_ids = state.provider_ids();
+                if let Some(provider_id) = provider_ids.get(app.selected_index) {
+                    app.mode = AppMode::ConfirmDelete(provider_id.clone());
+                }
+            }
+        }
         KeyCode::Up | KeyCode::Char('k') => {
             if app.selected_index > 0 {
                 app.on_event(AppEvent::SelectIndex(app.selected_index - 1));
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            // Don't go below the list - bounds check handled in on_event
             app.on_event(AppEvent::SelectIndex(app.selected_index.saturating_add(1)));
         }
         KeyCode::Enter => {
             // In provider list, select the provider at current index
             if app.mode == AppMode::ProviderList {
-                let provider_ids = _state.provider_ids();
+                let provider_ids = state.provider_ids();
                 if let Some(provider_id) = provider_ids.get(app.selected_index) {
                     app.on_event(AppEvent::SelectProvider(provider_id.clone()));
                 }

@@ -2821,6 +2821,7 @@ dependencies = [
  "crossterm",
  "discovery",
  "ratatui",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",
