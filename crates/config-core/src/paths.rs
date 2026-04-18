@@ -123,7 +123,7 @@ impl ConfigPaths {
     /// Starts from the current directory and walks up the tree
     /// until finding `opencode.json` or hitting the git root.
     pub fn project_config_path() -> Result<Option<PathBuf>> {
-        let current_dir = std::env::current_dir().map_err(|e| ConfigError::Io(e))?;
+        let current_dir = std::env::current_dir().map_err(ConfigError::Io)?;
 
         let mut dir = current_dir.as_path();
         loop {

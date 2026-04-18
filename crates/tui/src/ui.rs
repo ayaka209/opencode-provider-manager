@@ -9,9 +9,8 @@ use ratatui::Frame;
 use app::state::AppState;
 use auth::provider_env_var;
 use config_core::ConfigLayer;
-use serde_json;
 
-use crate::tui_app::App;
+use crate::tui_app::{AddProviderForm, App};
 
 /// Color scheme for the TUI.
 mod colors {
@@ -478,4 +477,63 @@ fn render_error_bar(frame: &mut ratatui::Frame, error_message: &Option<String>) 
         );
         frame.render_widget(error_text, bar_area);
     }
+}
+
+/// Render the add provider form wizard.
+pub fn render_add_provider(frame: &mut ratatui::Frame, form: &AddProviderForm) {
+    let size = frame.area();
+    let dialog_width = 60.min(size.width.saturating_sub(4));
+    let dialog_height = 12;
+    let x = (size.width.saturating_sub(dialog_width)) / 2;
+    let y = (size.height.saturating_sub(dialog_height)) / 2;
+
+    let dialog_area = ratatui::layout::Rect::new(x, y, dialog_width, dialog_height);
+
+    let labels = AddProviderForm::field_labels();
+    let fields = [&form.id, &form.name, &form.base_url];
+
+    let mut lines: Vec<Line> = vec![Line::from("")];
+
+    for (i, label) in labels.iter().enumerate() {
+        let is_focused = form.focus == i;
+        let cursor = if is_focused { "▶ " } else { "  " };
+        let value = fields[i];
+        let cursor_char = if is_focused && value.is_empty() {
+            "│"
+        } else {
+            ""
+        };
+
+        let label_style = if is_focused {
+            Style::default()
+                .fg(colors::PRIMARY)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(colors::DIM)
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(format!("{cursor}{label}: "), label_style),
+            Span::styled(value.to_string(), Style::default()),
+            Span::styled(
+                cursor_char.to_string(),
+                Style::default().fg(colors::PRIMARY),
+            ),
+        ]));
+        lines.push(Line::from(""));
+    }
+
+    lines.push(Line::from(Span::styled(
+        " Tab: Next field | Enter: Save | Esc: Cancel",
+        Style::default().fg(colors::DIM),
+    )));
+
+    let dialog = Paragraph::new(lines)
+        .block(
+            Block::bordered()
+                .title(" Add Provider ")
+                .border_style(Style::default().fg(colors::PRIMARY)),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(dialog, dialog_area);
 }

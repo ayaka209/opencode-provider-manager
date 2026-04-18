@@ -15,6 +15,12 @@ pub struct ModelsDevClient {
     api_url: String,
 }
 
+impl Default for ModelsDevClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ModelsDevClient {
     /// Create a new client with the default API URL.
     pub fn new() -> Self {

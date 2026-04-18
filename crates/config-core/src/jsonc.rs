@@ -51,12 +51,12 @@ impl JsoncHandler {
         let value = jsonc_parser::parse_to_value(&self.source, &Default::default())
             .map_err(|e| ConfigError::JsoncParse(format!("{e:?}")))?;
 
-        // Convert JsonValue to serde_json::Value then serialize
         match value {
-            Some(v) => json_value_to_serde(&v)
-                .map(|sv| serde_json::to_string_pretty(&sv))
-                .and_then(|r| r.map_err(|e| ConfigError::JsoncParse(format!("{e}"))))
-                .map_err(|e| e),
+            Some(v) => {
+                let sv = json_value_to_serde(&v)?;
+                serde_json::to_string_pretty(&sv)
+                    .map_err(|e| ConfigError::JsoncParse(format!("{e}")))
+            }
             None => Err(ConfigError::JsoncParse("Empty JSONC document".to_string())),
         }
     }

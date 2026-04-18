@@ -39,6 +39,36 @@ pub enum AppMode {
     Help,
     /// Confirm delete provider dialog.
     ConfirmDelete(String),
+    /// Add provider wizard (form with text inputs).
+    AddProvider(AddProviderForm),
+}
+
+/// Form state for the add provider wizard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddProviderForm {
+    /// Which field is currently focused (0=id, 1=name, 2=base_url).
+    pub focus: usize,
+    /// Provider ID field.
+    pub id: String,
+    /// Provider display name.
+    pub name: String,
+    /// Base URL (for options).
+    pub base_url: String,
+}
+
+impl AddProviderForm {
+    pub fn new() -> Self {
+        Self {
+            focus: 0,
+            id: String::new(),
+            name: String::new(),
+            base_url: String::new(),
+        }
+    }
+
+    pub fn field_labels() -> [&'static str; 3] {
+        ["Provider ID", "Display Name", "Base URL (optional)"]
+    }
 }
 
 impl App {
@@ -91,6 +121,9 @@ impl App {
             AppMode::ConfirmDelete(provider_id) => {
                 ui::render_provider_list(frame, state, self);
                 ui::render_confirm_delete(frame, provider_id);
+            }
+            AppMode::AddProvider(form) => {
+                ui::render_add_provider(frame, form);
             }
         }
     }
@@ -157,6 +190,69 @@ fn handle_key_event(key: crossterm::event::KeyEvent, app: &mut App, state: &mut 
         return;
     }
 
+    // Handle add provider form mode separately
+    if let AppMode::AddProvider(ref mut form) = app.mode {
+        match key.code {
+            KeyCode::Esc => {
+                app.mode = AppMode::ProviderList;
+            }
+            KeyCode::Tab | KeyCode::Down => {
+                form.focus = (form.focus + 1) % AddProviderForm::field_labels().len();
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                form.focus = (form.focus + AddProviderForm::field_labels().len() - 1)
+                    % AddProviderForm::field_labels().len();
+            }
+            KeyCode::Enter => {
+                // Submit form
+                let id = form.id.trim().to_string();
+                let name_val = form.name.trim().to_string();
+                let base_url_val = form.base_url.trim().to_string();
+
+                if id.is_empty() {
+                    app.error_message = Some("Provider ID cannot be empty".to_string());
+                    return;
+                }
+
+                // Build ProviderConfig
+                let mut options = std::collections::HashMap::new();
+                if !base_url_val.is_empty() {
+                    options.insert(
+                        "baseURL".to_string(),
+                        serde_json::Value::String(base_url_val),
+                    );
+                }
+
+                let provider_config = config_core::ProviderConfig {
+                    name: if name_val.is_empty() { None } else { Some(name_val) },
+                    npm: None,
+                    options: if options.is_empty() { None } else { Some(options) },
+                    models: None,
+                    disabled: None,
+                };
+
+                if let Err(e) = state.add_provider(id, provider_config, state.edit_layer) {
+                    app.error_message = Some(format!("Failed to add provider: {e}"));
+                }
+                app.mode = AppMode::ProviderList;
+            }
+            KeyCode::Backspace => match form.focus {
+                0 => { form.id.pop(); }
+                1 => { form.name.pop(); }
+                2 => { form.base_url.pop(); }
+                _ => {}
+            },
+            KeyCode::Char(c) => match form.focus {
+                0 => form.id.push(c),
+                1 => form.name.push(c),
+                2 => form.base_url.push(c),
+                _ => {}
+            },
+            _ => {}
+        }
+        return;
+    }
+
     // Global keybindings
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => {
@@ -198,6 +294,12 @@ fn handle_key_event(key: crossterm::event::KeyEvent, app: &mut App, state: &mut 
                 if let Some(provider_id) = provider_ids.get(app.selected_index) {
                     app.mode = AppMode::ConfirmDelete(provider_id.clone());
                 }
+            }
+        }
+        KeyCode::Char('n') => {
+            // Add new provider
+            if app.mode == AppMode::ProviderList {
+                app.mode = AppMode::AddProvider(AddProviderForm::new());
             }
         }
         KeyCode::Up | KeyCode::Char('k') => {
