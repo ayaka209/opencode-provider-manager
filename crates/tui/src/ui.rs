@@ -1,10 +1,10 @@
 //! TUI UI rendering functions.
 
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
-use ratatui::Frame;
 
 use app::state::AppState;
 use auth::provider_env_var;
@@ -128,8 +128,9 @@ pub fn render_provider_list(frame: &mut Frame, state: &AppState, app: &App) {
         ConfigLayer::Custom => "Custom",
     };
     let dirty = if state.dirty { " ●" } else { "" };
-    let status =
-        format!(" Layer: {layer}{dirty} | n:New | s:Save | d:Delete | r:Refresh | ?:Help | q:Quit | j/k:Nav | Enter:Select ");
+    let status = format!(
+        " Layer: {layer}{dirty} | n:New | s:Save | d:Delete | r:Refresh | ?:Help | q:Quit | j/k:Nav | Enter:Select "
+    );
     frame.render_widget(
         Paragraph::new(status).style(Style::default().fg(colors::DIM)),
         status_area,
@@ -383,8 +384,18 @@ pub fn render_config_detail(frame: &mut Frame, state: &AppState, _app: &App) {
         "Global config: {}\n  Exists: {}\n\nProject config: {}\n  Exists: {}\n\nAuth file: {}\n  Exists: {}\n\nCache dir: {}",
         state.paths.global.to_string_lossy(),
         state.paths.global.exists(),
-        state.paths.project.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| "(not found)".to_string()),
-        state.paths.project.as_ref().map(|p| p.exists()).unwrap_or(false),
+        state
+            .paths
+            .project
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "(not found)".to_string()),
+        state
+            .paths
+            .project
+            .as_ref()
+            .map(|p| p.exists())
+            .unwrap_or(false),
         state.paths.auth.to_string_lossy(),
         state.paths.auth.exists(),
         state.paths.cache_dir.to_string_lossy(),

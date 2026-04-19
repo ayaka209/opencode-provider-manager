@@ -503,11 +503,10 @@ fn handle_key_event(
         }
         KeyCode::Char('d') => {
             // Delete selected provider (with confirmation)
-            if app.mode == AppMode::ProviderList {
-                let provider_ids = state.provider_ids();
-                if let Some(provider_id) = provider_ids.get(app.selected_index) {
-                    app.mode = AppMode::ConfirmDelete(provider_id.clone());
-                }
+            if app.mode == AppMode::ProviderList
+                && let Some(provider_id) = state.provider_ids().get(app.selected_index)
+            {
+                app.mode = AppMode::ConfirmDelete(provider_id.clone());
             }
         }
         KeyCode::Char('n') => {
@@ -516,10 +515,8 @@ fn handle_key_event(
                 app.mode = AppMode::AddProvider(AddProviderForm::new());
             }
         }
-        KeyCode::Up | KeyCode::Char('k') => {
-            if app.selected_index > 0 {
-                app.on_event(AppEvent::SelectIndex(app.selected_index - 1));
-            }
+        KeyCode::Up | KeyCode::Char('k') if app.selected_index > 0 => {
+            app.on_event(AppEvent::SelectIndex(app.selected_index - 1));
         }
         KeyCode::Down | KeyCode::Char('j') => {
             app.on_event(AppEvent::SelectIndex(app.selected_index.saturating_add(1)));

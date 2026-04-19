@@ -30,8 +30,7 @@ pub fn validate_config(config: &OpenCodeConfig) -> Result<()> {
     }
 
     // Validate disabled_providers and enabled_providers don't conflict
-    if let (Some(ref disabled), Some(ref enabled)) =
-        (&config.disabled_providers, &config.enabled_providers)
+    if let (Some(disabled), Some(enabled)) = (&config.disabled_providers, &config.enabled_providers)
     {
         for provider_id in disabled {
             if enabled.contains(provider_id) {

@@ -409,16 +409,20 @@ mod tests {
         let providers = merged.provider.unwrap();
         let anthropic = providers.get("anthropic").unwrap();
         // Should have both models (deep merge)
-        assert!(anthropic
-            .models
-            .as_ref()
-            .unwrap()
-            .contains_key("claude-haiku-4-5"));
-        assert!(anthropic
-            .models
-            .as_ref()
-            .unwrap()
-            .contains_key("claude-sonnet-4-5"));
+        assert!(
+            anthropic
+                .models
+                .as_ref()
+                .unwrap()
+                .contains_key("claude-haiku-4-5")
+        );
+        assert!(
+            anthropic
+                .models
+                .as_ref()
+                .unwrap()
+                .contains_key("claude-sonnet-4-5")
+        );
         // Should have options from global
         assert!(anthropic.options.is_some());
     }

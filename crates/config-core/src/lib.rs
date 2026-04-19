@@ -17,7 +17,7 @@ pub mod validate;
 
 pub use error::{ConfigError, Result};
 pub use jsonc::JsoncHandler;
-pub use merge::{merge_configs, merge_two, MergeStrategy};
+pub use merge::{MergeStrategy, merge_configs, merge_two};
 pub use paths::{ConfigLayer, ConfigPaths};
 pub use schema::*;
 pub use validate::validate_config;

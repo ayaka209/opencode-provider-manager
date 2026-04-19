@@ -8,5 +8,5 @@ pub mod parser;
 pub mod status;
 
 pub use error::{AuthError, Result};
-pub use status::provider_env_var;
 pub use status::ProviderAuthStatus;
+pub use status::provider_env_var;

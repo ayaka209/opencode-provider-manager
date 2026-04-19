@@ -12,10 +12,10 @@
 //!   replaced. New destinations fall back to `serde_json::to_string_pretty`.
 
 use crate::error::{ConfigError, Result};
+use jsonc_parser::ParseOptions;
 use jsonc_parser::cst::{
     CstContainerNode, CstInputValue, CstNode, CstObject, CstObjectProp, CstRootNode,
 };
-use jsonc_parser::ParseOptions;
 use std::path::Path;
 
 /// Handler for JSONC file operations.
