@@ -28,7 +28,9 @@ pub struct AppState {
     pub global_config: Option<OpenCodeConfig>,
     /// Loaded project config.
     pub project_config: Option<OpenCodeConfig>,
-    /// Merged config (global + project).
+    /// Loaded custom config (from --config / OPENCODE_CONFIG).
+    pub custom_config: Option<OpenCodeConfig>,
+    /// Merged config (global + custom + project, per documented precedence).
     pub merged_config: OpenCodeConfig,
     /// Resolved config paths.
     pub paths: ConfigPaths,
@@ -47,6 +49,7 @@ impl AppState {
         Ok(Self {
             global_config: None,
             project_config: None,
+            custom_config: None,
             merged_config: OpenCodeConfig::default(),
             paths,
             mode: AppMode::MergedView,
@@ -56,10 +59,24 @@ impl AppState {
     }
 
     /// Load all config layers and merge them.
+    ///
+    /// Merge order follows the documented OpenCode precedence:
+    /// global < custom (OPENCODE_CONFIG) < project.
     pub fn load_configs(&mut self) -> config_core::Result<()> {
         // Load global config
         self.global_config = if self.paths.global.exists() {
             Some(config_core::jsonc::read_config(&self.paths.global)?)
+        } else {
+            None
+        };
+
+        // Load custom config (from --config or OPENCODE_CONFIG)
+        self.custom_config = if let Some(ref custom_path) = self.paths.custom {
+            if custom_path.exists() {
+                Some(config_core::jsonc::read_config(custom_path)?)
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -75,10 +92,13 @@ impl AppState {
             None
         };
 
-        // Merge
+        // Merge in documented order: global < custom < project
         let mut configs_to_merge = Vec::new();
         if let Some(global) = &self.global_config {
             configs_to_merge.push(global.clone());
+        }
+        if let Some(custom) = &self.custom_config {
+            configs_to_merge.push(custom.clone());
         }
         if let Some(project) = &self.project_config {
             configs_to_merge.push(project.clone());

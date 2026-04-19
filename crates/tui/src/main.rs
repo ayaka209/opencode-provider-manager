@@ -52,14 +52,14 @@ enum Commands {
 
     /// List configured providers as JSON.
     ListProviders {
-        /// Which config layer to read from (merged, global, project).
+        /// Which config layer to read from (merged, global, project, custom).
         #[arg(long, value_name = "LAYER", default_value = "merged")]
         layer: String,
     },
 
     /// Show config as JSON.
     ShowConfig {
-        /// Which config layer to show (merged, global, project).
+        /// Which config layer to show (merged, global, project, custom).
         #[arg(long, value_name = "LAYER", default_value = "merged")]
         layer: String,
     },
@@ -102,16 +102,16 @@ async fn main() {
             run_tui(layer, config, split).await
         }
         Some(Commands::ListProviders { layer }) => {
-            // CLI: list providers
-            run_list_providers(&layer)
+            // CLI: list providers (respects top-level --config)
+            run_list_providers(&layer, args.config.as_deref())
         }
         Some(Commands::ShowConfig { layer }) => {
-            // CLI: show config
-            run_show_config(&layer)
+            // CLI: show config (respects top-level --config)
+            run_show_config(&layer, args.config.as_deref())
         }
         Some(Commands::Validate) => {
-            // CLI: validate configs
-            run_validate()
+            // CLI: validate configs (respects top-level --config)
+            run_validate(args.config.as_deref())
         }
     };
 
@@ -123,16 +123,28 @@ async fn main() {
 }
 
 /// Run the TUI application.
-async fn run_tui(layer: Option<String>, _config: Option<String>, split: bool) -> Result<()> {
+async fn run_tui(layer: Option<String>, config: Option<String>, split: bool) -> Result<()> {
     // Initialize app state
     let mut state = AppState::new().context("Failed to initialize app state")?;
 
-    // Apply layer selection
+    // Apply custom config path if provided
+    if let Some(ref path_str) = config {
+        state.paths.custom = Some(std::path::PathBuf::from(path_str));
+        state.edit_layer = config_core::ConfigLayer::Custom;
+    }
+
+    // Apply explicit layer selection (overrides --config-derived default)
     if let Some(ref layer_str) = layer {
         match layer_str.to_lowercase().as_str() {
             "global" => state.edit_layer = config_core::ConfigLayer::Global,
             "project" => state.edit_layer = config_core::ConfigLayer::Project,
-            _ => {} // ignore invalid layer
+            "custom" => state.edit_layer = config_core::ConfigLayer::Custom,
+            other => {
+                return Err(anyhow::anyhow!(
+                    "Invalid --layer '{}'. Must be one of: global, project, custom",
+                    other
+                ));
+            }
         }
     }
 
@@ -148,11 +160,9 @@ async fn run_tui(layer: Option<String>, _config: Option<String>, split: bool) ->
 }
 
 /// List providers as JSON.
-fn run_list_providers(layer_str: &str) -> Result<()> {
-    // Initialize app state
+fn run_list_providers(layer_str: &str, custom_config: Option<&str>) -> Result<()> {
     let mut state = AppState::new().context("Failed to initialize app state")?;
-
-    // Load configs
+    apply_custom_config_path(&mut state, custom_config);
     state.load_configs().context("Failed to load configs")?;
 
     // Get the appropriate config based on layer
@@ -183,11 +193,9 @@ fn run_list_providers(layer_str: &str) -> Result<()> {
 }
 
 /// Show config as JSON.
-fn run_show_config(layer_str: &str) -> Result<()> {
-    // Initialize app state
+fn run_show_config(layer_str: &str, custom_config: Option<&str>) -> Result<()> {
     let mut state = AppState::new().context("Failed to initialize app state")?;
-
-    // Load configs
+    apply_custom_config_path(&mut state, custom_config);
     state.load_configs().context("Failed to load configs")?;
 
     // Get the appropriate config based on layer
@@ -203,11 +211,9 @@ fn run_show_config(layer_str: &str) -> Result<()> {
 }
 
 /// Validate config files.
-fn run_validate() -> Result<()> {
-    // Initialize app state
+fn run_validate(custom_config: Option<&str>) -> Result<()> {
     let mut state = AppState::new().context("Failed to initialize app state")?;
-
-    // Load configs
+    apply_custom_config_path(&mut state, custom_config);
     state.load_configs().context("Failed to load configs")?;
 
     let mut has_errors = false;
@@ -234,6 +240,18 @@ fn run_validate() -> Result<()> {
         }
     } else {
         println!("Project config: not found");
+    }
+
+    // Validate custom config if present
+    if let Some(ref custom) = state.custom_config {
+        if let Err(e) = config_core::validate_config(custom) {
+            eprintln!("Custom config error: {}", e);
+            has_errors = true;
+        } else {
+            println!("Custom config: OK");
+        }
+    } else if state.paths.custom.is_some() {
+        println!("Custom config: not found at specified path");
     }
 
     // Validate merged config
@@ -263,9 +281,20 @@ fn get_config_for_layer<'a>(state: &'a AppState, layer: &str) -> Result<&'a Open
             .project_config
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Project config not found")),
+        "custom" => state
+            .custom_config
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Custom config not found")),
         _ => Err(anyhow::anyhow!(
-            "Invalid layer '{}'. Must be one of: merged, global, project",
+            "Invalid layer '{}'. Must be one of: merged, global, project, custom",
             layer
         )),
+    }
+}
+
+/// Apply --config PATH to the state's paths before loading.
+fn apply_custom_config_path(state: &mut AppState, custom_config: Option<&str>) {
+    if let Some(path_str) = custom_config {
+        state.paths.custom = Some(std::path::PathBuf::from(path_str));
     }
 }

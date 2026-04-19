@@ -1,14 +1,21 @@
 //! JSONC (JSON with Comments) parser and serializer.
 //!
 //! Handles reading and writing JSONC files while preserving comments,
-//! trailing commas, and formatting.
+//! trailing commas, and formatting, using `jsonc-parser`'s CST API.
 //!
-//! Note: `jsonc-parser` v0.26 does not have CST (Concrete Syntax Tree) support.
-//! CST-based comment preservation will require upgrading to a newer version
-//! or implementing a custom approach. For now, we parse JSONC to clean JSON
-//! for deserialization, and write back as formatted JSON.
+//! Strategy:
+//! - Read: parse JSONC to clean JSON for serde deserialization.
+//! - Write: if the destination file already has JSONC source, reconcile the
+//!   new value against the existing CST node-by-node so comments and
+//!   structural formatting around unchanged keys are preserved. When a key's
+//!   value changes shape (scalar → object, array, etc.), the whole subtree is
+//!   replaced. New destinations fall back to `serde_json::to_string_pretty`.
 
 use crate::error::{ConfigError, Result};
+use jsonc_parser::cst::{
+    CstContainerNode, CstInputValue, CstNode, CstObject, CstObjectProp, CstRootNode,
+};
+use jsonc_parser::ParseOptions;
 use std::path::Path;
 
 /// Handler for JSONC file operations.
@@ -126,18 +133,100 @@ pub fn read_config<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     Ok(value)
 }
 
-/// Serialize a config value and write it to a file as formatted JSON.
+/// Serialize a config value and write it to a file.
 ///
-/// Note: This currently writes formatted JSON, not JSONC. Full JSONC
-/// comment preservation in write operations will be enhanced later.
+/// If the destination already contains valid JSONC, the existing CST is
+/// reconciled with the new value so that comments and formatting around
+/// unchanged keys are preserved. Otherwise, a freshly formatted JSON
+/// document is written.
 pub fn write_config<T: serde::Serialize>(value: &T, path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    let json_str = serde_json::to_string_pretty(value)?;
+    let new_value = serde_json::to_value(value)?;
+
+    // Try comment-preserving round-trip when an existing source is present.
+    if path.exists() {
+        if let Ok(existing) = std::fs::read_to_string(path) {
+            if let Ok(root) = CstRootNode::parse(&existing, &ParseOptions::default()) {
+                reconcile_root(&root, &new_value);
+                std::fs::write(path, root.to_string())?;
+                return Ok(());
+            }
+        }
+    }
+
+    let json_str = serde_json::to_string_pretty(&new_value)?;
     std::fs::write(path, json_str)?;
     Ok(())
+}
+
+/// Reconcile the root CST with the new serde value, preserving structural
+/// formatting and comments wherever the shape still matches.
+fn reconcile_root(root: &CstRootNode, new_value: &serde_json::Value) {
+    match (root.value(), new_value) {
+        (
+            Some(CstNode::Container(CstContainerNode::Object(obj))),
+            serde_json::Value::Object(map),
+        ) => reconcile_object(&obj, map),
+        _ => root.set_value(json_to_cst_input(new_value)),
+    }
+}
+
+fn reconcile_object(obj: &CstObject, new: &serde_json::Map<String, serde_json::Value>) {
+    // Snapshot existing properties (Rc clones) so we can iterate while mutating.
+    let existing: Vec<(String, CstObjectProp)> = obj
+        .properties()
+        .into_iter()
+        .filter_map(|prop| {
+            let name = prop.name()?.decoded_value().ok()?;
+            Some((name, prop))
+        })
+        .collect();
+
+    // Update or add keys present in the new map.
+    for (key, new_val) in new.iter() {
+        if let Some(prop) = obj.get(key) {
+            reconcile_prop(&prop, new_val);
+        } else {
+            obj.append(key, json_to_cst_input(new_val));
+        }
+    }
+
+    // Remove keys that no longer exist in the new map.
+    for (key, prop) in existing {
+        if !new.contains_key(&key) {
+            prop.remove();
+        }
+    }
+}
+
+fn reconcile_prop(prop: &CstObjectProp, new: &serde_json::Value) {
+    match (prop.value(), new) {
+        (
+            Some(CstNode::Container(CstContainerNode::Object(obj))),
+            serde_json::Value::Object(map),
+        ) => reconcile_object(&obj, map),
+        _ => prop.set_value(json_to_cst_input(new)),
+    }
+}
+
+fn json_to_cst_input(v: &serde_json::Value) -> CstInputValue {
+    match v {
+        serde_json::Value::Null => CstInputValue::Null,
+        serde_json::Value::Bool(b) => CstInputValue::Bool(*b),
+        serde_json::Value::Number(n) => CstInputValue::Number(n.to_string()),
+        serde_json::Value::String(s) => CstInputValue::String(s.clone()),
+        serde_json::Value::Array(a) => {
+            CstInputValue::Array(a.iter().map(json_to_cst_input).collect())
+        }
+        serde_json::Value::Object(o) => CstInputValue::Object(
+            o.iter()
+                .map(|(k, v)| (k.clone(), json_to_cst_input(v)))
+                .collect(),
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -210,5 +299,61 @@ mod tests {
         let source = r#"{ "model": "anthropic/claude-sonnet-4-5" }"#;
         let handler = JsoncHandler::parse(source).unwrap();
         assert_eq!(handler.source(), source);
+    }
+
+    #[test]
+    fn test_write_preserves_comments_on_edit() {
+        use std::io::Write;
+
+        // Start with a JSONC file that has comments around keys that will stay
+        // intact as well as around a key whose value we will change.
+        let mut temp_file = NamedTempFile::new().unwrap();
+        let original = "{\n  \
+            // keep this comment\n  \
+            \"$schema\": \"https://opencode.ai/config.json\",\n  \
+            // this comment sits next to a value that changes\n  \
+            \"model\": \"anthropic/claude-haiku-4-5\",\n  \
+            /* trailing block */\n  \
+            \"autoupdate\": true\n\
+            }\n";
+        temp_file.write_all(original.as_bytes()).unwrap();
+        temp_file.flush().unwrap();
+
+        // Read, mutate a single scalar, write back.
+        let mut config: crate::schema::OpenCodeConfig = read_config(temp_file.path()).unwrap();
+        config.model = Some("anthropic/claude-sonnet-4-5".to_string());
+        write_config(&config, temp_file.path()).unwrap();
+
+        let after = std::fs::read_to_string(temp_file.path()).unwrap();
+
+        // All original comments survive.
+        assert!(after.contains("// keep this comment"));
+        assert!(after.contains("// this comment sits next to a value that changes"));
+        assert!(after.contains("/* trailing block */"));
+        // The new value landed.
+        assert!(after.contains("anthropic/claude-sonnet-4-5"));
+        // Old value is gone.
+        assert!(!after.contains("anthropic/claude-haiku-4-5"));
+    }
+
+    #[test]
+    fn test_write_preserves_comments_on_added_key() {
+        use std::io::Write;
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        let original = "{\n  \
+            // annotation\n  \
+            \"model\": \"anthropic/claude-haiku-4-5\"\n\
+            }\n";
+        temp_file.write_all(original.as_bytes()).unwrap();
+        temp_file.flush().unwrap();
+
+        let mut config: crate::schema::OpenCodeConfig = read_config(temp_file.path()).unwrap();
+        config.small_model = Some("anthropic/claude-haiku-4-5".to_string());
+        write_config(&config, temp_file.path()).unwrap();
+
+        let after = std::fs::read_to_string(temp_file.path()).unwrap();
+        assert!(after.contains("// annotation"));
+        assert!(after.contains("\"smallModel\""));
     }
 }

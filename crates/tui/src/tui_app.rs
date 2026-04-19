@@ -279,37 +279,44 @@ fn handle_key_event(
                     % EditProviderForm::field_labels().len();
             }
             KeyCode::Enter => {
-                // Save edited fields back to state
+                // Save edited fields back to state, surfacing the first error
                 let pid = form.provider_id.clone();
                 let name_val = form.name.trim().to_string();
                 let npm_val = form.npm.trim().to_string();
                 let base_url_val = form.base_url.trim().to_string();
 
-                if !name_val.is_empty() {
-                    let _ = state.edit_provider_field(
-                        &pid,
-                        "name",
-                        serde_json::Value::String(name_val),
-                        state.edit_layer,
-                    );
+                let edit_result = (|| -> Result<(), app::error::AppError> {
+                    if !name_val.is_empty() {
+                        state.edit_provider_field(
+                            &pid,
+                            "name",
+                            serde_json::Value::String(name_val),
+                            state.edit_layer,
+                        )?;
+                    }
+                    if !npm_val.is_empty() {
+                        state.edit_provider_field(
+                            &pid,
+                            "npm",
+                            serde_json::Value::String(npm_val),
+                            state.edit_layer,
+                        )?;
+                    }
+                    if !base_url_val.is_empty() {
+                        state.edit_provider_field(
+                            &pid,
+                            "baseURL",
+                            serde_json::Value::String(base_url_val),
+                            state.edit_layer,
+                        )?;
+                    }
+                    Ok(())
+                })();
+
+                match edit_result {
+                    Ok(()) => app.mode = AppMode::ProviderList,
+                    Err(e) => app.error_message = Some(format!("Edit failed: {e}")),
                 }
-                if !npm_val.is_empty() {
-                    let _ = state.edit_provider_field(
-                        &pid,
-                        "npm",
-                        serde_json::Value::String(npm_val),
-                        state.edit_layer,
-                    );
-                }
-                if !base_url_val.is_empty() {
-                    let _ = state.edit_provider_field(
-                        &pid,
-                        "baseURL",
-                        serde_json::Value::String(base_url_val),
-                        state.edit_layer,
-                    );
-                }
-                app.mode = AppMode::ProviderList;
             }
             KeyCode::Backspace => match form.focus {
                 0 => {
@@ -480,8 +487,15 @@ fn handle_key_event(
             }
         }
         KeyCode::Char('r') => {
-            // Refresh configs from disk — check for unsaved changes first
-            if state.dirty {
+            if app.mode == AppMode::ModelSelector {
+                // In model selector, `r` re-fetches the model list for the
+                // currently selected provider.
+                if let Some(ref provider_id) = app.selected_provider {
+                    app.discovered_models.clear();
+                    async_action = AsyncAction::FetchModels(provider_id.clone());
+                }
+            } else if state.dirty {
+                // Refresh configs from disk — check for unsaved changes first
                 app.mode = AppMode::ConfirmRefresh;
             } else if let Err(e) = state.load_configs() {
                 app.error_message = Some(format!("Refresh failed: {e}"));

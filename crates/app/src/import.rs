@@ -25,9 +25,7 @@ pub fn import_config(
                     state.project_config = Some(external_config);
                 }
                 config_core::ConfigLayer::Custom => {
-                    return Err(crate::error::AppError::State(
-                        "Cannot import into custom config layer".to_string(),
-                    ));
+                    state.custom_config = Some(external_config);
                 }
             }
         }
@@ -36,11 +34,7 @@ pub fn import_config(
             let target = match layer {
                 config_core::ConfigLayer::Global => &mut state.global_config,
                 config_core::ConfigLayer::Project => &mut state.project_config,
-                config_core::ConfigLayer::Custom => {
-                    return Err(crate::error::AppError::State(
-                        "Cannot import into custom config layer".to_string(),
-                    ));
-                }
+                config_core::ConfigLayer::Custom => &mut state.custom_config,
             };
 
             match target {
@@ -72,6 +66,10 @@ pub fn export_config(state: &AppState, path: &Path, export_scope: ExportScope) -
             .project_config
             .as_ref()
             .ok_or_else(|| crate::error::AppError::State("No project config".to_string()))?,
+        ExportScope::Custom => state
+            .custom_config
+            .as_ref()
+            .ok_or_else(|| crate::error::AppError::State("No custom config".to_string()))?,
     };
 
     config_core::jsonc::write_config(config, path)?;
@@ -96,6 +94,8 @@ pub enum ExportScope {
     Global,
     /// Export only the project config.
     Project,
+    /// Export only the custom config (from --config / OPENCODE_CONFIG).
+    Custom,
 }
 
 #[cfg(test)]

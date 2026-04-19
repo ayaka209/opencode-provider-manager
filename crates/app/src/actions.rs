@@ -115,13 +115,32 @@ impl AppState {
     }
 
     /// Save the config at the specified layer to disk.
+    ///
+    /// For the Project layer, falls back to `./opencode.json` in the current
+    /// directory when no project file was discovered, so that new project
+    /// configs can be created.
     pub fn save(&mut self, layer: ConfigLayer) -> Result<()> {
-        let config = self.config_for_layer(layer)?;
-        let path = self.paths.path_for_layer(layer).ok_or_else(|| {
-            crate::error::AppError::State(format!("No config path for layer {:?}", layer))
-        })?;
+        // Resolve save path. For Project, fall back to ./opencode.json if none
+        // was discovered so first-time project config creation works.
+        let path_buf = match layer {
+            ConfigLayer::Project => match self.paths.project.clone() {
+                Some(p) => p,
+                None => {
+                    let cwd = std::env::current_dir().map_err(|e| {
+                        crate::error::AppError::State(format!("Cannot read cwd: {e}"))
+                    })?;
+                    let fallback = cwd.join("opencode.json");
+                    self.paths.project = Some(fallback.clone());
+                    fallback
+                }
+            },
+            other => self.paths.path_for_layer(other).cloned().ok_or_else(|| {
+                crate::error::AppError::State(format!("No config path for layer {other:?}"))
+            })?,
+        };
 
-        config_core::jsonc::write_config(config, path)?;
+        let config = self.config_for_layer(layer)?;
+        config_core::jsonc::write_config(config, &path_buf)?;
         self.dirty = false;
         Ok(())
     }
@@ -136,8 +155,8 @@ impl AppState {
             ConfigLayer::Project => self.project_config.as_ref().ok_or_else(|| {
                 crate::error::AppError::State("No project config loaded".to_string())
             }),
-            ConfigLayer::Custom => self.global_config.as_ref().ok_or_else(|| {
-                crate::error::AppError::State("Custom config not available".to_string())
+            ConfigLayer::Custom => self.custom_config.as_ref().ok_or_else(|| {
+                crate::error::AppError::State("No custom config loaded".to_string())
             }),
         }
     }
@@ -156,9 +175,12 @@ impl AppState {
                 }
                 Ok(self.project_config.as_mut().unwrap())
             }
-            ConfigLayer::Custom => Err(crate::error::AppError::State(
-                "Cannot edit custom config directly".to_string(),
-            )),
+            ConfigLayer::Custom => {
+                if self.custom_config.is_none() {
+                    self.custom_config = Some(OpenCodeConfig::default());
+                }
+                Ok(self.custom_config.as_mut().unwrap())
+            }
         }
     }
 
@@ -166,6 +188,9 @@ impl AppState {
         let mut configs = Vec::new();
         if let Some(global) = &self.global_config {
             configs.push(global.clone());
+        }
+        if let Some(custom) = &self.custom_config {
+            configs.push(custom.clone());
         }
         if let Some(project) = &self.project_config {
             configs.push(project.clone());
