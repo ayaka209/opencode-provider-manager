@@ -7,8 +7,8 @@ use config_core::OpenCodeConfig;
 use serde::Serialize;
 use std::process;
 
-mod tui_app;
 mod event;
+mod tui_app;
 mod ui;
 
 /// Command-line arguments.
@@ -47,7 +47,7 @@ enum Commands {
 
         /// Start in split view mode.
         #[arg(long)]
-    split: bool,
+        split: bool,
     },
 
     /// List configured providers as JSON.
@@ -93,7 +93,11 @@ async fn main() {
             // No subcommand - run TUI with top-level args
             run_tui(args.layer, args.config, args.split).await
         }
-        Some(Commands::Tui { layer, config, split }) => {
+        Some(Commands::Tui {
+            layer,
+            config,
+            split,
+        }) => {
             // Explicit TUI subcommand
             run_tui(layer, config, split).await
         }
@@ -119,11 +123,7 @@ async fn main() {
 }
 
 /// Run the TUI application.
-async fn run_tui(
-    layer: Option<String>,
-    _config: Option<String>,
-    split: bool,
-) -> Result<()> {
+async fn run_tui(layer: Option<String>, _config: Option<String>, split: bool) -> Result<()> {
     // Initialize app state
     let mut state = AppState::new().context("Failed to initialize app state")?;
 
@@ -195,8 +195,8 @@ fn run_show_config(layer_str: &str) -> Result<()> {
         .with_context(|| format!("Invalid layer: {}", layer_str))?;
 
     // Output as pretty JSON
-    let json = serde_json::to_string_pretty(config)
-        .context("Failed to serialize config to JSON")?;
+    let json =
+        serde_json::to_string_pretty(config).context("Failed to serialize config to JSON")?;
     println!("{}", json);
 
     Ok(())

@@ -55,7 +55,9 @@ impl ModelDiscovery for OpenAICompatibleDiscovery {
     }
 
     async fn discover_models(&self, api_key: Option<&str>) -> Result<Vec<DiscoveredModel>> {
-        let mut request = self.client.get(format!("{}/models", self.base_url.trim_end_matches('/')));
+        let mut request = self
+            .client
+            .get(format!("{}/models", self.base_url.trim_end_matches('/')));
 
         if let Some(key) = api_key {
             request = request.bearer_auth(key);

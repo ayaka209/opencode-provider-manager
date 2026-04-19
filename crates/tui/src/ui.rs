@@ -10,7 +10,7 @@ use app::state::AppState;
 use auth::provider_env_var;
 use config_core::ConfigLayer;
 
-use crate::tui_app::{AddProviderForm, App};
+use crate::tui_app::{AddProviderForm, App, EditProviderForm};
 
 /// Color scheme for the TUI.
 mod colors {
@@ -129,7 +129,7 @@ pub fn render_provider_list(frame: &mut Frame, state: &AppState, app: &App) {
     };
     let dirty = if state.dirty { " ●" } else { "" };
     let status =
-        format!(" Layer: {layer}{dirty} | s:Save | d:Delete | r:Refresh | ?:Help | q:Quit | j/k:Nav | Enter:Select ");
+        format!(" Layer: {layer}{dirty} | n:New | s:Save | d:Delete | r:Refresh | ?:Help | q:Quit | j/k:Nav | Enter:Select ");
     frame.render_widget(
         Paragraph::new(status).style(Style::default().fg(colors::DIM)),
         status_area,
@@ -291,17 +291,69 @@ pub fn render_model_selector(frame: &mut Frame, _state: &AppState, app: &App) {
         .as_deref()
         .unwrap_or("(none selected)");
 
-    let content = format!(
-        "Model discovery for provider: {provider_id}\n\nUse 'opm --refresh-models' to fetch available models\nfrom models.dev and provider APIs.\n\nThis feature will be available in a future version."
-    );
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!(" Provider: {provider_id}"),
+        Style::default().fg(colors::PRIMARY),
+    )));
+    lines.push(Line::from(""));
 
-    let model_view = Paragraph::new(content)
+    if app.models_loading {
+        lines.push(Line::from(Span::styled(
+            " Fetching models from models.dev...",
+            Style::default().fg(colors::DIM),
+        )));
+    } else if app.discovered_models.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " No models found. Press Esc to go back.",
+            Style::default().fg(colors::DIM),
+        )));
+    } else {
+        lines.push(Line::from(Span::styled(
+            format!(
+                " Found {} models. Press Enter to add to provider.",
+                app.discovered_models.len()
+            ),
+            Style::default().fg(colors::DIM),
+        )));
+        lines.push(Line::from(""));
+
+        for (i, model) in app.discovered_models.iter().enumerate() {
+            let style = if i == app.selected_index {
+                Style::default().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default()
+            };
+
+            let ctx = model
+                .context_length
+                .map(|c| format!("{c}"))
+                .unwrap_or_else(|| "-".to_string());
+
+            let cost = match (model.input_cost_per_million, model.output_cost_per_million) {
+                (Some(inp), Some(out)) => format!("${inp:.2}/${out:.2}/M"),
+                _ => "-".to_string(),
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {:2} ", i + 1), Style::default().fg(colors::DIM)),
+                Span::styled(model.id.clone(), style),
+                Span::styled(
+                    format!("  (ctx: {ctx}, cost: {cost})"),
+                    Style::default().fg(colors::DIM),
+                ),
+            ]));
+        }
+    }
+
+    let model_view = Paragraph::new(lines)
         .block(Block::bordered().title("opm - Model Selector"))
-        .wrap(Wrap { trim: false });
+        .wrap(Wrap { trim: false })
+        .scroll((app.selected_index.saturating_sub(5) as u16, 0));
     frame.render_widget(model_view, main_area);
 
     frame.render_widget(
-        Paragraph::new(" p:Providers | m:Models | ?:Help | q:Quit")
+        Paragraph::new(" Enter:Add model | j/k:Nav | r:Refresh models | p:Providers | q:Quit")
             .style(Style::default().fg(colors::DIM)),
         status_area,
     );
@@ -413,6 +465,10 @@ pub fn render_help(frame: &mut Frame) {
             Span::raw("Delete selected provider"),
         ]),
         Line::from(vec![
+            Span::styled("  n        ", Style::default().fg(colors::PRIMARY)),
+            Span::raw("Add new provider"),
+        ]),
+        Line::from(vec![
             Span::styled("  r        ", Style::default().fg(colors::PRIMARY)),
             Span::raw("Refresh configs from disk"),
         ]),
@@ -458,6 +514,36 @@ pub fn render_confirm_delete(frame: &mut ratatui::Frame, provider_id: &str) {
     frame.render_widget(dialog, dialog_area);
 }
 
+/// Render a confirmation dialog for refreshing with unsaved changes.
+pub fn render_confirm_refresh(frame: &mut ratatui::Frame) {
+    let size = frame.area();
+    let dialog_width = 54.min(size.width.saturating_sub(4));
+    let dialog_height = 5;
+    let x = (size.width.saturating_sub(dialog_width)) / 2;
+    let y = (size.height.saturating_sub(dialog_height)) / 2;
+
+    let dialog_area = ratatui::layout::Rect::new(x, y, dialog_width, dialog_height);
+
+    let dialog_text = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            " You have unsaved changes. Discard and refresh?",
+            Style::default().fg(colors::WARNING),
+        )),
+        Line::from(""),
+        Line::from(Span::raw(" y: Discard & Refresh   n: Cancel")),
+    ];
+
+    let dialog = Paragraph::new(dialog_text)
+        .block(
+            Block::bordered()
+                .title("Confirm Refresh")
+                .border_style(Style::default().fg(colors::WARNING)),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(dialog, dialog_area);
+}
+
 /// Render an error bar at the bottom of the screen.
 fn render_error_bar(frame: &mut ratatui::Frame, error_message: &Option<String>) {
     if let Some(msg) = error_message {
@@ -483,14 +569,14 @@ fn render_error_bar(frame: &mut ratatui::Frame, error_message: &Option<String>) 
 pub fn render_add_provider(frame: &mut ratatui::Frame, form: &AddProviderForm) {
     let size = frame.area();
     let dialog_width = 60.min(size.width.saturating_sub(4));
-    let dialog_height = 12;
+    let dialog_height = 16;
     let x = (size.width.saturating_sub(dialog_width)) / 2;
     let y = (size.height.saturating_sub(dialog_height)) / 2;
 
     let dialog_area = ratatui::layout::Rect::new(x, y, dialog_width, dialog_height);
 
     let labels = AddProviderForm::field_labels();
-    let fields = [&form.id, &form.name, &form.base_url];
+    let fields = [&form.id, &form.name, &form.npm, &form.base_url];
 
     let mut lines: Vec<Line> = vec![Line::from("")];
 
@@ -536,4 +622,108 @@ pub fn render_add_provider(frame: &mut ratatui::Frame, form: &AddProviderForm) {
         )
         .wrap(Wrap { trim: false });
     frame.render_widget(dialog, dialog_area);
+}
+
+/// Render the edit provider view.
+pub fn render_edit_provider(frame: &mut ratatui::Frame, state: &AppState, form: &EditProviderForm) {
+    let size = frame.area();
+
+    let vertical = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ]);
+    let [title_area, main_area, status_area] = vertical.areas(size);
+
+    let title = Paragraph::new(format!("Edit Provider: {}", form.provider_id))
+        .style(
+            Style::default()
+                .fg(colors::PRIMARY)
+                .add_modifier(Modifier::BOLD),
+        )
+        .block(Block::bordered());
+    frame.render_widget(title, title_area);
+
+    // Show read-only info + editable fields
+    let provider = state.get_provider(&form.provider_id);
+    let model_count = provider
+        .and_then(|p| p.models.as_ref())
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let is_disabled = provider.and_then(|p| p.disabled).unwrap_or(false);
+
+    let labels = EditProviderForm::field_labels();
+    let fields = [&form.name, &form.npm, &form.base_url];
+
+    let mut lines: Vec<Line> = vec![
+        Line::from(vec![
+            Span::styled("  Provider ID: ", Style::default().fg(colors::DIM)),
+            Span::styled(
+                form.provider_id.clone(),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Models: ", Style::default().fg(colors::DIM)),
+            Span::styled(format!("{model_count}"), Style::default()),
+        ]),
+        Line::from(vec![
+            Span::styled("  Disabled: ", Style::default().fg(colors::DIM)),
+            Span::styled(
+                if is_disabled { "yes" } else { "no" }.to_string(),
+                Style::default(),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Editable fields:",
+            Style::default().fg(colors::DIM),
+        )),
+        Line::from(""),
+    ];
+
+    for (i, label) in labels.iter().enumerate() {
+        let is_focused = form.focus == i;
+        let cursor = if is_focused { "▶ " } else { "  " };
+        let value = fields[i];
+        let cursor_char = if is_focused && value.is_empty() {
+            "│"
+        } else {
+            ""
+        };
+
+        let label_style = if is_focused {
+            Style::default()
+                .fg(colors::PRIMARY)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(colors::DIM)
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(format!("{cursor}{label}: "), label_style),
+            Span::styled(value.to_string(), Style::default()),
+            Span::styled(
+                cursor_char.to_string(),
+                Style::default().fg(colors::PRIMARY),
+            ),
+        ]));
+        lines.push(Line::from(""));
+    }
+
+    lines.push(Line::from(Span::styled(
+        "  Tab: Next field | Enter: Save | Esc: Cancel",
+        Style::default().fg(colors::DIM),
+    )));
+
+    let edit_view = Paragraph::new(lines)
+        .block(Block::bordered().title("opm - Edit Provider"))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(edit_view, main_area);
+
+    frame.render_widget(
+        Paragraph::new(" Enter:Save | Tab:Next | Esc:Cancel | p:Back to list")
+            .style(Style::default().fg(colors::DIM)),
+        status_area,
+    );
 }
