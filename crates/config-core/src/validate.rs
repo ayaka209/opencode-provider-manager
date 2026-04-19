@@ -191,10 +191,12 @@ mod tests {
 
         let result = validate_config(&config);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("disabled_providers and enabled_providers"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("disabled_providers and enabled_providers")
+        );
     }
 
     #[test]

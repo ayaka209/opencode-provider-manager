@@ -509,11 +509,9 @@ fn handle_key_event(
                 app.mode = AppMode::ConfirmDelete(provider_id.clone());
             }
         }
-        KeyCode::Char('n') => {
+        KeyCode::Char('n') if app.mode == AppMode::ProviderList => {
             // Add new provider
-            if app.mode == AppMode::ProviderList {
-                app.mode = AppMode::AddProvider(AddProviderForm::new());
-            }
+            app.mode = AppMode::AddProvider(AddProviderForm::new());
         }
         KeyCode::Up | KeyCode::Char('k') if app.selected_index > 0 => {
             app.on_event(AppEvent::SelectIndex(app.selected_index - 1));
