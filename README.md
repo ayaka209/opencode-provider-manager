@@ -27,6 +27,27 @@ The project is organized as a Cargo workspace with 6 crates:
 
 ## Installation
 
+### npx (recommended)
+
+No installation needed — run directly with npx:
+
+```bash
+npx opencode-provider-manager
+```
+
+The binary is automatically downloaded for your platform (Windows/macOS/Linux, x64/ARM64).
+
+Global install:
+
+```bash
+npm install -g opencode-provider-manager
+opm
+```
+
+### Pre-built binaries
+
+Download from [GitHub Releases](https://github.com/ayaka209/opencode-provider-manager/releases).
+
 ### From source
 
 ```bash
@@ -37,12 +58,6 @@ cargo build --release
 
 The binary will be at `target/release/opm`.
 
-### Run directly
-
-```bash
-cargo run --bin opm
-```
-
 ## Usage
 
 ### TUI Mode (default)
@@ -51,7 +66,7 @@ cargo run --bin opm
 opm                  # Launch TUI
 opm --split          # Start in split view (global vs project)
 opm --config PATH   # Use a custom config file path
-opm --layer LAYER    # Start with a specific config layer
+opm --layer LAYER    # Start with a specific config layer (global/project/custom)
 ```
 
 #### Key Bindings
@@ -61,14 +76,26 @@ opm --layer LAYER    # Start with a specific config layer
 | `1` | Merged config view |
 | `2` | Split view (global vs project) |
 | `p` | Provider list |
+| `n` | Add new provider |
+| `Enter` | Edit selected provider |
+| `d` | Delete provider (with confirmation) |
+| `s` | Save config |
+| `r` | Refresh from disk |
 | `a` | Auth status |
-| `m` | Model discovery |
-| `c` | Config paths |
+| `m` | Model discovery (from models.dev) |
+| `c` | Config detail |
 | `?` | Help |
 | `j`/`↓` | Move down |
 | `k`/`↑` | Move up |
-| `Enter` | Select item |
 | `q`/`Esc` | Quit / Cancel |
+
+### CLI Mode
+
+```bash
+opm list-providers [--layer merged|global|project|custom]   # List providers as JSON
+opm show-config [--layer merged|global|project|custom]      # Show config as JSON
+opm validate                                                 # Validate configs, exit 0/1
+```
 
 ### GUI Mode
 

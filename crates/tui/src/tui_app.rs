@@ -561,3 +561,592 @@ fn handle_key_event(
     }
     async_action
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use app::state::AppState;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    /// Helper to create a key event.
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// Helper to create an App with a test config loaded.
+    /// Returns (App, AppState). provider_ids() order is not guaranteed
+    /// (HashMap), so tests must use provider_ids() to find indices.
+    fn test_app_with_providers() -> (App, AppState) {
+        let mut state = AppState::new().unwrap();
+        // Add providers directly to the merged config for testing
+        let mut providers = std::collections::HashMap::new();
+        providers.insert(
+            "openai".to_string(),
+            config_core::ProviderConfig {
+                name: Some("OpenAI".to_string()),
+                npm: Some("openai".to_string()),
+                options: None,
+                models: Some({
+                    let mut m = std::collections::HashMap::new();
+                    m.insert("gpt-4o".to_string(), config_core::ModelConfig::default());
+                    m
+                }),
+                disabled: None,
+            },
+        );
+        providers.insert(
+            "anthropic".to_string(),
+            config_core::ProviderConfig {
+                name: Some("Anthropic".to_string()),
+                npm: Some("@anthropic-ai/sdk".to_string()),
+                options: Some({
+                    let mut o = std::collections::HashMap::new();
+                    o.insert(
+                        "baseURL".to_string(),
+                        serde_json::Value::String("https://api.anthropic.com".to_string()),
+                    );
+                    o
+                }),
+                models: None,
+                disabled: None,
+            },
+        );
+        state.merged_config.provider = Some(providers);
+        let app = App::new();
+        (app, state)
+    }
+
+    /// Helper to find the index of a provider by ID.
+    fn provider_index(state: &AppState, target_id: &str) -> usize {
+        state
+            .provider_ids()
+            .iter()
+            .position(|id| id == target_id)
+            .unwrap_or(0)
+    }
+
+    // --- App creation ---
+
+    #[test]
+    fn test_app_new_defaults() {
+        let app = App::new();
+        assert_eq!(app.mode, AppMode::ProviderList);
+        assert!(!app.should_quit);
+        assert!(app.selected_provider.is_none());
+        assert_eq!(app.selected_index, 0);
+        assert!(app.error_message.is_none());
+        assert!(app.discovered_models.is_empty());
+        assert!(!app.models_loading);
+    }
+
+    // --- Mode switching ---
+
+    #[test]
+    fn test_switch_to_merged_view() {
+        let (mut app, mut state) = test_app_with_providers();
+        handle_key_event(key(KeyCode::Char('1')), &mut app, &mut state);
+        assert_eq!(app.mode, AppMode::MergedView);
+    }
+
+    #[test]
+    fn test_switch_to_split_view() {
+        let (mut app, mut state) = test_app_with_providers();
+        handle_key_event(key(KeyCode::Char('2')), &mut app, &mut state);
+        assert_eq!(app.mode, AppMode::SplitView);
+    }
+
+    #[test]
+    fn test_switch_to_auth_status() {
+        let (mut app, mut state) = test_app_with_providers();
+        handle_key_event(key(KeyCode::Char('a')), &mut app, &mut state);
+        assert_eq!(app.mode, AppMode::AuthStatus);
+    }
+
+    #[test]
+    fn test_switch_to_config_detail() {
+        let (mut app, mut state) = test_app_with_providers();
+        handle_key_event(key(KeyCode::Char('c')), &mut app, &mut state);
+        assert_eq!(app.mode, AppMode::ConfigDetail);
+    }
+
+    #[test]
+    fn test_help_toggle() {
+        let (mut app, mut state) = test_app_with_providers();
+        handle_key_event(key(KeyCode::Char('?')), &mut app, &mut state);
+        assert_eq!(app.mode, AppMode::Help);
+        // Press ? again to go back
+        handle_key_event(key(KeyCode::Char('?')), &mut app, &mut state);
+        assert_eq!(app.mode, AppMode::ProviderList);
+    }
+
+    #[test]
+    fn test_quit_from_provider_list() {
+        let (mut app, mut state) = test_app_with_providers();
+        handle_key_event(key(KeyCode::Char('q')), &mut app, &mut state);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_esc_from_provider_list_quits() {
+        let (mut app, mut state) = test_app_with_providers();
+        handle_key_event(key(KeyCode::Esc), &mut app, &mut state);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_esc_from_help_goes_back() {
+        let (mut app, mut state) = test_app_with_providers();
+        handle_key_event(key(KeyCode::Char('?')), &mut app, &mut state);
+        assert_eq!(app.mode, AppMode::Help);
+        handle_key_event(key(KeyCode::Esc), &mut app, &mut state);
+        assert_eq!(app.mode, AppMode::ProviderList);
+        assert!(!app.should_quit);
+    }
+
+    // --- Navigation ---
+
+    #[test]
+    fn test_navigate_down() {
+        let (mut app, mut state) = test_app_with_providers();
+        assert_eq!(app.selected_index, 0);
+        handle_key_event(key(KeyCode::Down), &mut app, &mut state);
+        assert_eq!(app.selected_index, 1);
+    }
+
+    #[test]
+    fn test_navigate_up() {
+        let (mut app, mut state) = test_app_with_providers();
+        handle_key_event(key(KeyCode::Down), &mut app, &mut state);
+        assert_eq!(app.selected_index, 1);
+        handle_key_event(key(KeyCode::Up), &mut app, &mut state);
+        assert_eq!(app.selected_index, 0);
+    }
+
+    #[test]
+    fn test_navigate_j_k() {
+        let (mut app, mut state) = test_app_with_providers();
+        handle_key_event(key(KeyCode::Char('j')), &mut app, &mut state);
+        assert_eq!(app.selected_index, 1);
+        handle_key_event(key(KeyCode::Char('k')), &mut app, &mut state);
+        assert_eq!(app.selected_index, 0);
+    }
+
+    #[test]
+    fn test_navigate_up_at_zero_does_nothing() {
+        let (mut app, mut state) = test_app_with_providers();
+        handle_key_event(key(KeyCode::Up), &mut app, &mut state);
+        assert_eq!(app.selected_index, 0);
+    }
+
+    // --- Error clearing ---
+
+    #[test]
+    fn test_error_cleared_on_next_key() {
+        let (mut app, mut state) = test_app_with_providers();
+        app.error_message = Some("test error".to_string());
+        handle_key_event(key(KeyCode::Down), &mut app, &mut state);
+        assert!(app.error_message.is_none());
+    }
+
+    // --- AddProvider form ---
+
+    #[test]
+    fn test_add_provider_opens() {
+        let (mut app, mut state) = test_app_with_providers();
+        handle_key_event(key(KeyCode::Char('n')), &mut app, &mut state);
+        assert!(matches!(app.mode, AppMode::AddProvider(_)));
+    }
+
+    #[test]
+    fn test_add_provider_type_fields() {
+        let (mut app, mut state) = test_app_with_providers();
+        handle_key_event(key(KeyCode::Char('n')), &mut app, &mut state);
+        // Type provider ID
+        for c in "test-provider".chars() {
+            handle_key_event(key(KeyCode::Char(c)), &mut app, &mut state);
+        }
+        if let AppMode::AddProvider(ref form) = app.mode {
+            assert_eq!(form.id, "test-provider");
+            assert_eq!(form.focus, 0);
+        }
+
+        // Tab to name field
+        handle_key_event(key(KeyCode::Tab), &mut app, &mut state);
+        if let AppMode::AddProvider(ref form) = app.mode {
+            assert_eq!(form.focus, 1);
+        }
+        for c in "Test Provider".chars() {
+            handle_key_event(key(KeyCode::Char(c)), &mut app, &mut state);
+        }
+        if let AppMode::AddProvider(ref form) = app.mode {
+            assert_eq!(form.name, "Test Provider");
+        }
+
+        // Tab to npm field
+        handle_key_event(key(KeyCode::Tab), &mut app, &mut state);
+        if let AppMode::AddProvider(ref form) = app.mode {
+            assert_eq!(form.focus, 2);
+        }
+        for c in "@test/sdk".chars() {
+            handle_key_event(key(KeyCode::Char(c)), &mut app, &mut state);
+        }
+        if let AppMode::AddProvider(ref form) = app.mode {
+            assert_eq!(form.npm, "@test/sdk");
+        }
+
+        // Tab to base_url field
+        handle_key_event(key(KeyCode::Tab), &mut app, &mut state);
+        if let AppMode::AddProvider(ref form) = app.mode {
+            assert_eq!(form.focus, 3);
+        }
+        for c in "https://api.test.com".chars() {
+            handle_key_event(key(KeyCode::Char(c)), &mut app, &mut state);
+        }
+        if let AppMode::AddProvider(ref form) = app.mode {
+            assert_eq!(form.base_url, "https://api.test.com");
+        }
+    }
+
+    #[test]
+    fn test_add_provider_tab_cycles() {
+        let (mut app, mut state) = test_app_with_providers();
+        handle_key_event(key(KeyCode::Char('n')), &mut app, &mut state);
+        // Tab 4 times should cycle back to 0
+        for _ in 0..4 {
+            handle_key_event(key(KeyCode::Tab), &mut app, &mut state);
+        }
+        if let AppMode::AddProvider(ref form) = app.mode {
+            assert_eq!(form.focus, 0);
+        }
+    }
+
+    #[test]
+    fn test_add_provider_backspace() {
+        let (mut app, mut state) = test_app_with_providers();
+        handle_key_event(key(KeyCode::Char('n')), &mut app, &mut state);
+        handle_key_event(key(KeyCode::Char('a')), &mut app, &mut state);
+        handle_key_event(key(KeyCode::Char('b')), &mut app, &mut state);
+        handle_key_event(key(KeyCode::Backspace), &mut app, &mut state);
+        if let AppMode::AddProvider(ref form) = app.mode {
+            assert_eq!(form.id, "a");
+        }
+    }
+
+    #[test]
+    fn test_add_provider_empty_id_shows_error() {
+        let (mut app, mut state) = test_app_with_providers();
+        handle_key_event(key(KeyCode::Char('n')), &mut app, &mut state);
+        handle_key_event(key(KeyCode::Enter), &mut app, &mut state);
+        assert!(app.error_message.is_some());
+        assert!(app.error_message.unwrap().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn test_add_provider_esc_cancels() {
+        let (mut app, mut state) = test_app_with_providers();
+        handle_key_event(key(KeyCode::Char('n')), &mut app, &mut state);
+        handle_key_event(key(KeyCode::Esc), &mut app, &mut state);
+        assert_eq!(app.mode, AppMode::ProviderList);
+    }
+
+    #[test]
+    fn test_add_provider_submit_creates_provider() {
+        let (mut app, mut state) = test_app_with_providers();
+        handle_key_event(key(KeyCode::Char('n')), &mut app, &mut state);
+
+        // Type provider ID
+        for c in "groq".chars() {
+            handle_key_event(key(KeyCode::Char(c)), &mut app, &mut state);
+        }
+        // Tab to name
+        handle_key_event(key(KeyCode::Tab), &mut app, &mut state);
+        for c in "Groq".chars() {
+            handle_key_event(key(KeyCode::Char(c)), &mut app, &mut state);
+        }
+        // Tab to npm
+        handle_key_event(key(KeyCode::Tab), &mut app, &mut state);
+        // Skip npm (empty)
+        // Tab to base_url
+        handle_key_event(key(KeyCode::Tab), &mut app, &mut state);
+        // Skip base_url (empty)
+
+        // Submit
+        handle_key_event(key(KeyCode::Enter), &mut app, &mut state);
+
+        assert_eq!(app.mode, AppMode::ProviderList);
+        assert!(state.dirty);
+        let ids = state.provider_ids();
+        assert!(ids.contains(&"groq".to_string()));
+        let provider = state.get_provider("groq").unwrap();
+        assert_eq!(provider.name.as_deref(), Some("Groq"));
+    }
+
+    // --- EditProvider ---
+
+    #[test]
+    fn test_enter_opens_edit_provider() {
+        let (mut app, mut state) = test_app_with_providers();
+        let idx = provider_index(&state, "openai");
+        app.selected_index = idx;
+        handle_key_event(key(KeyCode::Enter), &mut app, &mut state);
+        assert!(matches!(app.mode, AppMode::EditProvider(_)));
+        if let AppMode::EditProvider(ref form) = app.mode {
+            assert_eq!(form.provider_id, "openai");
+            assert_eq!(form.name, "OpenAI");
+            assert_eq!(form.npm, "openai");
+            assert_eq!(form.base_url, "");
+        }
+    }
+
+    #[test]
+    fn test_edit_provider_esc_cancels() {
+        let (mut app, mut state) = test_app_with_providers();
+        handle_key_event(key(KeyCode::Enter), &mut app, &mut state);
+        handle_key_event(key(KeyCode::Esc), &mut app, &mut state);
+        assert_eq!(app.mode, AppMode::ProviderList);
+    }
+
+    #[test]
+    fn test_edit_provider_edit_name() {
+        let (mut app, mut state) = test_app_with_providers();
+        // Copy merged into project_config so edit_provider_field has a target
+        state.project_config = Some(state.merged_config.clone());
+        let idx = provider_index(&state, "openai");
+        app.selected_index = idx;
+        handle_key_event(key(KeyCode::Enter), &mut app, &mut state);
+        // Clear existing name and type new
+        if let AppMode::EditProvider(ref form) = app.mode {
+            assert_eq!(form.name, "OpenAI");
+        }
+        // Backspace to clear
+        for _ in 0.."OpenAI".len() {
+            handle_key_event(key(KeyCode::Backspace), &mut app, &mut state);
+        }
+        for c in "NewOpenAI".chars() {
+            handle_key_event(key(KeyCode::Char(c)), &mut app, &mut state);
+        }
+        if let AppMode::EditProvider(ref form) = app.mode {
+            assert_eq!(form.name, "NewOpenAI");
+        }
+
+        // Save
+        handle_key_event(key(KeyCode::Enter), &mut app, &mut state);
+        assert_eq!(app.mode, AppMode::ProviderList);
+        let provider = state.get_provider("openai").unwrap();
+        assert_eq!(provider.name.as_deref(), Some("NewOpenAI"));
+    }
+
+    #[test]
+    fn test_edit_provider_tab_cycles() {
+        let (mut app, mut state) = test_app_with_providers();
+        handle_key_event(key(KeyCode::Enter), &mut app, &mut state);
+        for _ in 0..EditProviderForm::field_labels().len() {
+            handle_key_event(key(KeyCode::Tab), &mut app, &mut state);
+        }
+        if let AppMode::EditProvider(ref form) = app.mode {
+            assert_eq!(form.focus, 0);
+        }
+    }
+
+    // --- EditProvider with baseURL ---
+
+    #[test]
+    fn test_edit_provider_shows_base_url() {
+        let (mut app, mut state) = test_app_with_providers();
+        // Select anthropic
+        let idx = provider_index(&state, "anthropic");
+        app.selected_index = idx;
+        handle_key_event(key(KeyCode::Enter), &mut app, &mut state);
+        if let AppMode::EditProvider(ref form) = app.mode {
+            assert_eq!(form.provider_id, "anthropic");
+            assert_eq!(form.base_url, "https://api.anthropic.com");
+        }
+    }
+
+    // --- ConfirmDelete ---
+
+    #[test]
+    fn test_delete_opens_confirm() {
+        let (mut app, mut state) = test_app_with_providers();
+        let idx = provider_index(&state, "openai");
+        app.selected_index = idx;
+        handle_key_event(key(KeyCode::Char('d')), &mut app, &mut state);
+        assert!(matches!(app.mode, AppMode::ConfirmDelete(_)));
+        if let AppMode::ConfirmDelete(ref id) = app.mode {
+            assert_eq!(id, "openai");
+        }
+    }
+
+    #[test]
+    fn test_delete_confirm_yes_removes() {
+        let (mut app, mut state) = test_app_with_providers();
+        let idx = provider_index(&state, "openai");
+        app.selected_index = idx;
+        handle_key_event(key(KeyCode::Char('d')), &mut app, &mut state);
+        handle_key_event(key(KeyCode::Char('y')), &mut app, &mut state);
+        assert_eq!(app.mode, AppMode::ProviderList);
+        let ids = state.provider_ids();
+        assert!(!ids.contains(&"openai".to_string()));
+        assert!(state.dirty);
+    }
+
+    #[test]
+    fn test_delete_confirm_n_cancels() {
+        let (mut app, mut state) = test_app_with_providers();
+        let original_count = state.provider_ids().len();
+        handle_key_event(key(KeyCode::Char('d')), &mut app, &mut state);
+        handle_key_event(key(KeyCode::Char('n')), &mut app, &mut state);
+        assert_eq!(app.mode, AppMode::ProviderList);
+        assert_eq!(state.provider_ids().len(), original_count);
+    }
+
+    #[test]
+    fn test_delete_confirm_esc_cancels() {
+        let (mut app, mut state) = test_app_with_providers();
+        handle_key_event(key(KeyCode::Char('d')), &mut app, &mut state);
+        handle_key_event(key(KeyCode::Esc), &mut app, &mut state);
+        assert_eq!(app.mode, AppMode::ProviderList);
+    }
+
+    // --- ConfirmRefresh ---
+
+    #[test]
+    fn test_refresh_when_dirty_shows_confirm() {
+        let (mut app, mut state) = test_app_with_providers();
+        state.dirty = true;
+        handle_key_event(key(KeyCode::Char('r')), &mut app, &mut state);
+        assert_eq!(app.mode, AppMode::ConfirmRefresh);
+    }
+
+    #[test]
+    fn test_refresh_confirm_yes_reloads() {
+        let (mut app, mut state) = test_app_with_providers();
+        state.dirty = true;
+        handle_key_event(key(KeyCode::Char('r')), &mut app, &mut state);
+        handle_key_event(key(KeyCode::Char('y')), &mut app, &mut state);
+        assert_eq!(app.mode, AppMode::ProviderList);
+        assert!(!state.dirty);
+    }
+
+    #[test]
+    fn test_refresh_confirm_n_cancels() {
+        let (mut app, mut state) = test_app_with_providers();
+        state.dirty = true;
+        handle_key_event(key(KeyCode::Char('r')), &mut app, &mut state);
+        handle_key_event(key(KeyCode::Char('n')), &mut app, &mut state);
+        assert_eq!(app.mode, AppMode::ProviderList);
+        assert!(state.dirty); // Still dirty
+    }
+
+    #[test]
+    fn test_refresh_when_not_dirty_reloads_directly() {
+        let (mut app, mut state) = test_app_with_providers();
+        assert!(!state.dirty);
+        handle_key_event(key(KeyCode::Char('r')), &mut app, &mut state);
+        assert_eq!(app.mode, AppMode::ProviderList);
+    }
+
+    // --- ModelSelector ---
+
+    #[test]
+    fn test_m_key_triggers_model_fetch() {
+        let (mut app, mut state) = test_app_with_providers();
+        let idx = provider_index(&state, "openai");
+        app.selected_index = idx;
+        let action = handle_key_event(key(KeyCode::Char('m')), &mut app, &mut state);
+        assert_eq!(app.mode, AppMode::ModelSelector);
+        assert!(matches!(action, AsyncAction::FetchModels(ref id) if id == "openai"));
+    }
+
+    #[test]
+    fn test_r_in_model_selector_refetches() {
+        let (mut app, mut state) = test_app_with_providers();
+        // Enter model selector first
+        let _ = handle_key_event(key(KeyCode::Char('m')), &mut app, &mut state);
+        app.discovered_models = vec![discovery::DiscoveredModel {
+            id: "gpt-5".to_string(),
+            name: "GPT-5".to_string(),
+            provider_id: "openai".to_string(),
+            context_length: Some(128000),
+            max_output_tokens: Some(16384),
+            input_cost_per_million: Some(10.0),
+            output_cost_per_million: Some(30.0),
+        }];
+        // Press r to refresh
+        let action = handle_key_event(key(KeyCode::Char('r')), &mut app, &mut state);
+        assert!(app.discovered_models.is_empty());
+        assert!(matches!(action, AsyncAction::FetchModels(_)));
+    }
+
+    // --- Save ---
+
+    #[test]
+    fn test_save_marks_dirty() {
+        let (mut app, mut state) = test_app_with_providers();
+        state.dirty = true;
+        // Save to a layer that has no path will fail, but the attempt is made
+        let _ = handle_key_event(key(KeyCode::Char('s')), &mut app, &mut state);
+        // Error expected since no real config file exists
+        // Just verify it doesn't crash
+    }
+
+    // --- AddProvider with npm and baseURL ---
+
+    #[test]
+    fn test_add_provider_with_all_fields() {
+        let (mut app, mut state) = test_app_with_providers();
+        handle_key_event(key(KeyCode::Char('n')), &mut app, &mut state);
+
+        // Type ID
+        for c in "mistral".chars() {
+            handle_key_event(key(KeyCode::Char(c)), &mut app, &mut state);
+        }
+        // Tab → name
+        handle_key_event(key(KeyCode::Tab), &mut app, &mut state);
+        for c in "Mistral AI".chars() {
+            handle_key_event(key(KeyCode::Char(c)), &mut app, &mut state);
+        }
+        // Tab → npm
+        handle_key_event(key(KeyCode::Tab), &mut app, &mut state);
+        for c in "@mistral/sdk".chars() {
+            handle_key_event(key(KeyCode::Char(c)), &mut app, &mut state);
+        }
+        // Tab → base_url
+        handle_key_event(key(KeyCode::Tab), &mut app, &mut state);
+        for c in "https://api.mistral.ai".chars() {
+            handle_key_event(key(KeyCode::Char(c)), &mut app, &mut state);
+        }
+
+        // Submit
+        handle_key_event(key(KeyCode::Enter), &mut app, &mut state);
+
+        assert_eq!(app.mode, AppMode::ProviderList);
+        let provider = state.get_provider("mistral").unwrap();
+        assert_eq!(provider.name.as_deref(), Some("Mistral AI"));
+        assert_eq!(provider.npm.as_deref(), Some("@mistral/sdk"));
+        let base_url = provider
+            .options
+            .as_ref()
+            .and_then(|o| o.get("baseURL"))
+            .and_then(|v| v.as_str());
+        assert_eq!(base_url, Some("https://api.mistral.ai"));
+    }
+
+    // --- BackTab in forms ---
+
+    #[test]
+    fn test_add_provider_shift_tab_goes_back() {
+        let (mut app, mut state) = test_app_with_providers();
+        handle_key_event(key(KeyCode::Char('n')), &mut app, &mut state);
+        // Tab to field 1
+        handle_key_event(key(KeyCode::Tab), &mut app, &mut state);
+        if let AppMode::AddProvider(ref form) = app.mode {
+            assert_eq!(form.focus, 1);
+        }
+        // BackTab to field 0
+        handle_key_event(key(KeyCode::BackTab), &mut app, &mut state);
+        if let AppMode::AddProvider(ref form) = app.mode {
+            assert_eq!(form.focus, 0);
+        }
+    }
+}

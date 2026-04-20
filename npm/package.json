@@ -1,0 +1,41 @@
+{
+  "name": "opencode-provider-manager",
+  "version": "0.1.1",
+  "description": "OpenCode Provider Manager — manage opencode.json provider configs via TUI or CLI",
+  "bin": {
+    "opm": "./run.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "install.js",
+    "run.js"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ayaka209/opencode-provider-manager.git"
+  },
+  "keywords": [
+    "opencode",
+    "provider",
+    "config",
+    "manager",
+    "tui",
+    "cli"
+  ],
+  "author": "小紅 <weloveayaka@users.noreply.github.com>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/ayaka209/opencode-provider-manager/issues"
+  },
+  "homepage": "https://github.com/ayaka209/opencode-provider-manager#readme",
+  "engines": {
+    "node": ">=16"
+  },
+  "os": [
+    "win32",
+    "darwin",
+    "linux"
+  ]
+}
