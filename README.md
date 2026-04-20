@@ -131,6 +131,8 @@ Provider authentication is read from `~/.local/share/opencode/auth.json` (or pla
 
 Environment variable references are also detected: `{env:OPENAI_API_KEY}`.
 
+> **⚠️ Do not put API keys in `opencode.json`.** After adding a provider, run `/connect <provider-id>` in OpenCode to securely save your API key to `auth.json`.
+
 ## Development
 
 ```bash
