@@ -133,8 +133,9 @@ pub fn read_config<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     Ok(value)
 }
 
-/// Serialize a config value and write it to a file.
+/// Serialize a config value and write it to a file atomically.
 ///
+/// Uses a temp file + rename to prevent partial writes on crash.
 /// If the destination already contains valid JSONC, the existing CST is
 /// reconciled with the new value so that comments and formatting around
 /// unchanged keys are preserved. Otherwise, a freshly formatted JSON
@@ -145,21 +146,55 @@ pub fn write_config<T: serde::Serialize>(value: &T, path: &Path) -> Result<()> {
     }
 
     let new_value = serde_json::to_value(value)?;
+    let content = compute_output(path, &new_value)?;
+    atomic_write(path, &content)
+}
 
+/// Compute the output content, reconciling with existing JSONC if possible.
+fn compute_output(path: &Path, new_value: &serde_json::Value) -> Result<String> {
     // Try comment-preserving round-trip when an existing source is present.
     if path.exists() {
         if let Ok(existing) = std::fs::read_to_string(path) {
             if let Ok(root) = CstRootNode::parse(&existing, &ParseOptions::default()) {
-                reconcile_root(&root, &new_value);
-                std::fs::write(path, root.to_string())?;
-                return Ok(());
+                reconcile_root(&root, new_value);
+                return Ok(root.to_string());
             }
         }
     }
 
-    let json_str = serde_json::to_string_pretty(&new_value)?;
-    std::fs::write(path, json_str)?;
-    Ok(())
+    Ok(serde_json::to_string_pretty(new_value)?)
+}
+
+/// Write content atomically: write to a temp file in the same directory,
+/// then rename. This prevents partial/corrupted files on crash.
+fn atomic_write(path: &Path, content: &str) -> Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        ConfigError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "path has no parent directory",
+        ))
+    })?;
+
+    // Generate temp file name in the same directory (required for atomic rename)
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let temp_name = format!(".{file_name}.tmp.{}", std::process::id());
+    let temp_path = parent.join(&temp_name);
+
+    // Write to temp file
+    std::fs::write(&temp_path, content)?;
+
+    // Atomic rename (on Windows, replaces existing; on POSIX, atomically swaps)
+    match std::fs::rename(&temp_path, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // Clean up temp file on failure
+            let _ = std::fs::remove_file(&temp_path);
+            Err(ConfigError::Io(e))
+        }
+    }
 }
 
 /// Reconcile the root CST with the new serde value, preserving structural

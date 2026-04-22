@@ -113,6 +113,12 @@ pub struct OpenCodeConfig {
     /// Tool enable/disable overrides.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<HashMap<String, bool>>,
+
+    /// Catch-all for fields not explicitly modeled above.
+    /// Prevents data loss when reading configs with fields our schema
+    /// doesn't cover yet (e.g., new OpenCode features).
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
 }
 
 /// Log levels matching OpenCode config schema.
@@ -494,5 +500,56 @@ mod tests {
 
         let notify_val: AutoupdateConfig = serde_json::from_str(r#""notify""#).unwrap();
         assert!(matches!(notify_val, AutoupdateConfig::Notify(_)));
+    }
+
+    #[test]
+    fn test_unknown_fields_preserved_in_extra() {
+        // Simulates a config with fields our schema doesn't model yet.
+        // The "theme" and "customFeature" fields must survive round-trip.
+        let json = r#"{
+            "$schema": "https://opencode.ai/config.json",
+            "model": "anthropic/claude-sonnet-4-5",
+            "provider": {
+                "openai": {
+                    "npm": "openai"
+                }
+            },
+            "theme": "dark",
+            "customFeature": { "enabled": true, "level": 42 }
+        }"#;
+
+        let config: OpenCodeConfig = serde_json::from_str(json).unwrap();
+        // Known fields parsed correctly
+        assert_eq!(config.model.as_deref(), Some("anthropic/claude-sonnet-4-5"));
+        assert!(config.provider.is_some());
+        // Unknown fields captured in extra
+        assert_eq!(
+            config.extra.get("theme").and_then(|v| v.as_str()),
+            Some("dark")
+        );
+        assert_eq!(
+            config
+                .extra
+                .get("customFeature")
+                .and_then(|v| v.get("enabled"))
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+
+        // Round-trip: serialize back and verify unknown fields survive
+        let serialized = serde_json::to_string_pretty(&config).unwrap();
+        let deserialized: OpenCodeConfig = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(
+            deserialized.extra.get("theme").and_then(|v| v.as_str()),
+            Some("dark")
+        );
+        assert_eq!(
+            deserialized
+                .extra
+                .get("customFeature")
+                .and_then(|v| v.get("level"))
+                .and_then(|v| v.as_i64()),
+            Some(42)
+        );
     }
 }

@@ -1,16 +1,27 @@
 //! TUI UI rendering functions.
 
-use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
+use ratatui::Frame;
 
 use app::state::AppState;
 use auth::provider_env_var;
 use config_core::ConfigLayer;
 
-use crate::tui_app::{AddProviderForm, App, EditProviderForm};
+use crate::tui_app::{AddProviderForm, App, EditProviderForm, KNOWN_SDKS, all_provider_ids, copy_source_list, BUILTIN_PROVIDERS};
+
+/// Helper for label styling based on focus state.
+fn label_style(focused: bool) -> Style {
+    if focused {
+        Style::default()
+            .fg(colors::PRIMARY)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(colors::DIM)
+    }
+}
 
 /// Color scheme for the TUI.
 mod colors {
@@ -61,50 +72,72 @@ pub fn render_provider_list(frame: &mut Frame, state: &AppState, app: &App) {
         .block(Block::bordered().title("opm"));
     frame.render_widget(title, title_area);
 
-    // Provider list
-    let provider_ids = state.provider_ids();
+    // Provider list — show configured + built-in providers
+    let all_ids = all_provider_ids(state);
     let mut lines: Vec<Line> = Vec::new();
 
-    for (i, id) in provider_ids.iter().enumerate() {
+    for (i, (id, is_builtin)) in all_ids.iter().enumerate() {
         let provider = state.get_provider(id);
         let model_count = provider
             .and_then(|p| p.models.as_ref())
             .map(|m| m.len())
             .unwrap_or(0);
 
-        let auth_span = match check_provider_auth(id) {
-            AuthStatus::Configured => {
-                Span::styled(" [configured]", Style::default().fg(colors::SUCCESS))
+        let auth_span = if *is_builtin {
+            Span::styled(" [built-in]", Style::default().fg(colors::DIM))
+        } else {
+            match check_provider_auth(id) {
+                AuthStatus::Configured => {
+                    Span::styled(" [configured]", Style::default().fg(colors::SUCCESS))
+                }
+                AuthStatus::EnvVar(var) => Span::styled(
+                    format!(" [env:{var}]"),
+                    Style::default().fg(colors::WARNING),
+                ),
+                AuthStatus::Missing => {
+                    Span::styled(" [no key]", Style::default().fg(colors::ERROR))
+                }
             }
-            AuthStatus::EnvVar(var) => Span::styled(
-                format!(" [env:{var}]"),
-                Style::default().fg(colors::WARNING),
-            ),
-            AuthStatus::Missing => Span::styled(" [no key]", Style::default().fg(colors::ERROR)),
         };
 
-        let name = provider
-            .and_then(|p| p.name.clone())
-            .unwrap_or_else(|| id.clone());
+        let name = if *is_builtin {
+            BUILTIN_PROVIDERS
+                .iter()
+                .find(|(bid, _, _)| bid == id)
+                .map(|(_, n, _)| n.to_string())
+                .unwrap_or_else(|| id.clone())
+        } else {
+            provider
+                .and_then(|p| p.name.clone())
+                .unwrap_or_else(|| id.clone())
+        };
 
         let style = if i == app.selected_index {
             Style::default().add_modifier(Modifier::REVERSED)
+        } else if *is_builtin {
+            Style::default().fg(colors::DIM)
         } else {
             Style::default()
         };
 
+        let count_str = if *is_builtin {
+            "available".to_string()
+        } else {
+            format!("{} models", model_count)
+        };
+
         lines.push(Line::from(vec![
             Span::styled(format!("  {:2} ", i + 1), Style::default().fg(colors::DIM)),
-            Span::styled(name.clone(), style),
+            Span::styled(name, style),
             auth_span,
             Span::styled(
-                format!("  ({} models)", model_count),
+                format!("  ({})", count_str),
                 Style::default().fg(colors::DIM),
             ),
         ]));
     }
 
-    if provider_ids.is_empty() {
+    if all_ids.is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "  No providers configured.",
@@ -577,51 +610,154 @@ fn render_error_bar(frame: &mut ratatui::Frame, error_message: &Option<String>) 
 }
 
 /// Render the add provider form wizard.
-pub fn render_add_provider(frame: &mut ratatui::Frame, form: &AddProviderForm) {
+pub fn render_add_provider(frame: &mut ratatui::Frame, form: &AddProviderForm, state: &AppState) {
     let size = frame.area();
     let dialog_width = 60.min(size.width.saturating_sub(4));
-    let dialog_height = 16;
+    let dialog_height = if form.show_copy_list {
+        24.min(size.height.saturating_sub(2))
+    } else {
+        20.min(size.height.saturating_sub(2))
+    };
     let x = (size.width.saturating_sub(dialog_width)) / 2;
     let y = (size.height.saturating_sub(dialog_height)) / 2;
 
     let dialog_area = ratatui::layout::Rect::new(x, y, dialog_width, dialog_height);
 
-    let labels = AddProviderForm::field_labels();
-    let fields = [&form.id, &form.name, &form.npm, &form.base_url];
-
     let mut lines: Vec<Line> = vec![Line::from("")];
 
-    for (i, label) in labels.iter().enumerate() {
-        let is_focused = form.focus == i;
-        let cursor = if is_focused { "▶ " } else { "  " };
-        let value = fields[i];
-        let cursor_char = if is_focused && value.is_empty() {
+    // Copy-from list overlay
+    if form.show_copy_list {
+        lines.push(Line::from(Span::styled(
+            "  Copy from existing provider:",
+            Style::default()
+                .fg(colors::PRIMARY)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(Span::styled(
+            "  ↑↓:Navigate  Enter:Select  Esc:Cancel",
+            Style::default().fg(colors::DIM),
+        )));
+        lines.push(Line::from(""));
+
+        let sources = copy_source_list(state);
+        for (i, (_id, name)) in sources.iter().enumerate() {
+            let highlighted = form.copy_highlight == i;
+            let marker = if highlighted { "  › " } else { "    " };
+            let style = if highlighted {
+                Style::default()
+                    .fg(colors::PRIMARY)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(colors::DIM)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(marker.to_string(), style),
+                Span::styled(name.clone(), style),
+            ]));
+        }
+
+        let dialog = Paragraph::new(lines)
+            .block(
+                Block::bordered()
+                    .title(" Add Provider — Copy From ")
+                    .border_style(Style::default().fg(colors::PRIMARY)),
+            )
+            .wrap(Wrap { trim: false });
+        frame.render_widget(dialog, dialog_area);
+        return;
+    }
+
+    // Field 0: Provider ID (text input)
+    let id_focused = form.focus == 0;
+    let id_cursor = if id_focused { "▶ " } else { "  " };
+    let id_cursor_char = if id_focused && form.id.is_empty() {
+        "│"
+    } else {
+        ""
+    };
+    lines.push(Line::from(vec![
+        Span::styled(format!("{id_cursor}Provider ID: "), label_style(id_focused)),
+        Span::styled(form.id.clone(), Style::default()),
+        Span::styled(id_cursor_char, Style::default().fg(colors::PRIMARY)),
+    ]));
+    lines.push(Line::from(""));
+
+    // Field 1: Display Name (text input)
+    let name_focused = form.focus == 1;
+    let name_cursor = if name_focused { "▶ " } else { "  " };
+    let name_cursor_char = if name_focused && form.name.is_empty() {
+        "│"
+    } else {
+        ""
+    };
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("{name_cursor}Display Name: "),
+            label_style(name_focused),
+        ),
+        Span::styled(form.name.clone(), Style::default()),
+        Span::styled(name_cursor_char, Style::default().fg(colors::PRIMARY)),
+    ]));
+    lines.push(Line::from(""));
+
+    // Field 2: SDK Package (selection list or custom text)
+    let sdk_focused = form.focus == 2;
+    let sdk_cursor = if sdk_focused { "▶ " } else { "  " };
+    lines.push(Line::from(vec![Span::styled(
+        format!("{sdk_cursor}SDK Package: "),
+        label_style(sdk_focused),
+    )]));
+
+    if form.sdk.custom_mode {
+        let cc = if sdk_focused && form.sdk.custom_text.is_empty() {
             "│"
         } else {
             ""
         };
-
-        let label_style = if is_focused {
-            Style::default()
-                .fg(colors::PRIMARY)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(colors::DIM)
-        };
-
         lines.push(Line::from(vec![
-            Span::styled(format!("{cursor}{label}: "), label_style),
-            Span::styled(value.to_string(), Style::default()),
-            Span::styled(
-                cursor_char.to_string(),
-                Style::default().fg(colors::PRIMARY),
-            ),
+            Span::styled("    Custom: ", Style::default().fg(colors::DIM)),
+            Span::styled(form.sdk.custom_text.clone(), Style::default()),
+            Span::styled(cc, Style::default().fg(colors::PRIMARY)),
         ]));
-        lines.push(Line::from(""));
+    } else {
+        for (i, sdk) in KNOWN_SDKS.iter().enumerate() {
+            let highlighted = sdk_focused && form.sdk.highlight == i;
+            let marker = if highlighted { "  › " } else { "    " };
+            let style = if highlighted {
+                Style::default()
+                    .fg(colors::PRIMARY)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(colors::DIM)
+            };
+            lines.push(Line::from(vec![Span::styled(
+                format!("{marker}{sdk}"),
+                style,
+            )]));
+        }
     }
+    lines.push(Line::from(""));
+
+    // Field 3: Base URL (text input)
+    let url_focused = form.focus == 3;
+    let url_cursor = if url_focused { "▶ " } else { "  " };
+    let url_cursor_char = if url_focused && form.base_url.is_empty() {
+        "│"
+    } else {
+        ""
+    };
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("{url_cursor}Base URL (opt): "),
+            label_style(url_focused),
+        ),
+        Span::styled(form.base_url.clone(), Style::default()),
+        Span::styled(url_cursor_char, Style::default().fg(colors::PRIMARY)),
+    ]));
+    lines.push(Line::from(""));
 
     lines.push(Line::from(Span::styled(
-        " Tab: Next field | Enter: Save | Esc: Cancel",
+        " Tab:Next | ↑↓:Select SDK | Ctrl+C:Copy | Enter:Save | Esc:Cancel",
         Style::default().fg(colors::DIM),
     )));
 
@@ -663,9 +799,6 @@ pub fn render_edit_provider(frame: &mut ratatui::Frame, state: &AppState, form: 
         .unwrap_or(0);
     let is_disabled = provider.and_then(|p| p.disabled).unwrap_or(false);
 
-    let labels = EditProviderForm::field_labels();
-    let fields = [&form.name, &form.npm, &form.base_url];
-
     let mut lines: Vec<Line> = vec![
         Line::from(vec![
             Span::styled("  Provider ID: ", Style::default().fg(colors::DIM)),
@@ -693,37 +826,103 @@ pub fn render_edit_provider(frame: &mut ratatui::Frame, state: &AppState, form: 
         Line::from(""),
     ];
 
-    for (i, label) in labels.iter().enumerate() {
-        let is_focused = form.focus == i;
-        let cursor = if is_focused { "▶ " } else { "  " };
-        let value = fields[i];
-        let cursor_char = if is_focused && value.is_empty() {
+    // Field 0: Display Name (text input)
+    {
+        let name_focused = form.focus == 0;
+        let name_cursor = if name_focused { "▶ " } else { "  " };
+        let name_cursor_char = if name_focused && form.name.is_empty() {
             "│"
         } else {
             ""
         };
-
-        let label_style = if is_focused {
+        let label_style = if name_focused {
             Style::default()
                 .fg(colors::PRIMARY)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(colors::DIM)
         };
-
         lines.push(Line::from(vec![
-            Span::styled(format!("{cursor}{label}: "), label_style),
-            Span::styled(value.to_string(), Style::default()),
-            Span::styled(
-                cursor_char.to_string(),
-                Style::default().fg(colors::PRIMARY),
-            ),
+            Span::styled(format!("{name_cursor}Display Name: "), label_style),
+            Span::styled(form.name.clone(), Style::default()),
+            Span::styled(name_cursor_char, Style::default().fg(colors::PRIMARY)),
+        ]));
+        lines.push(Line::from(""));
+    }
+
+    // Field 1: SDK Package (selection list or custom text)
+    {
+        let sdk_focused = form.focus == 1;
+        let sdk_cursor = if sdk_focused { "▶ " } else { "  " };
+        let label_style = if sdk_focused {
+            Style::default()
+                .fg(colors::PRIMARY)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(colors::DIM)
+        };
+        lines.push(Line::from(vec![Span::styled(
+            format!("{sdk_cursor}SDK Package: "),
+            label_style,
+        )]));
+
+        if form.sdk.custom_mode {
+            let cc = if sdk_focused && form.sdk.custom_text.is_empty() {
+                "│"
+            } else {
+                ""
+            };
+            lines.push(Line::from(vec![
+                Span::styled("    Custom: ", Style::default().fg(colors::DIM)),
+                Span::styled(form.sdk.custom_text.clone(), Style::default()),
+                Span::styled(cc, Style::default().fg(colors::PRIMARY)),
+            ]));
+        } else {
+            for (i, sdk) in KNOWN_SDKS.iter().enumerate() {
+                let highlighted = sdk_focused && form.sdk.highlight == i;
+                let marker = if highlighted { "  › " } else { "    " };
+                let style = if highlighted {
+                    Style::default()
+                        .fg(colors::PRIMARY)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(colors::DIM)
+                };
+                lines.push(Line::from(vec![Span::styled(
+                    format!("{marker}{sdk}"),
+                    style,
+                )]));
+            }
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Field 2: Base URL (text input)
+    {
+        let url_focused = form.focus == 2;
+        let url_cursor = if url_focused { "▶ " } else { "  " };
+        let url_cursor_char = if url_focused && form.base_url.is_empty() {
+            "│"
+        } else {
+            ""
+        };
+        let label_style = if url_focused {
+            Style::default()
+                .fg(colors::PRIMARY)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(colors::DIM)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{url_cursor}Base URL: "), label_style),
+            Span::styled(form.base_url.clone(), Style::default()),
+            Span::styled(url_cursor_char, Style::default().fg(colors::PRIMARY)),
         ]));
         lines.push(Line::from(""));
     }
 
     lines.push(Line::from(Span::styled(
-        "  Tab: Next field | Enter: Save | Esc: Cancel",
+        "  Tab:Next | ↑↓:Select SDK | Enter:Confirm/Save | Esc:Cancel",
         Style::default().fg(colors::DIM),
     )));
 

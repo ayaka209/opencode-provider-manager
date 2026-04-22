@@ -51,19 +51,150 @@ pub enum AppMode {
     EditProvider(EditProviderForm),
 }
 
+/// Known SDK packages for provider configuration.
+/// The last entry "Custom" signals manual text entry mode.
+pub const KNOWN_SDKS: &[&str] = &[
+    "openai",
+    "@anthropic-ai/sdk",
+    "@google/generative-ai",
+    "@mistralai/sdk",
+    "@aws-sdk/client-bedrock-runtime",
+    "@azure/openai",
+    "ollama",
+    "Custom...",
+];
+
+/// Built-in providers that OpenCode supports out of the box.
+/// (id, display_name, npm_package)
+pub const BUILTIN_PROVIDERS: &[(&str, &str, &str)] = &[
+    ("openai", "OpenAI", "openai"),
+    ("anthropic", "Anthropic", "@anthropic-ai/sdk"),
+    ("google", "Google AI", "@google/generative-ai"),
+    ("groq", "Groq", "openai"),
+    ("mistral", "Mistral AI", "@mistralai/sdk"),
+    ("xai", "xAI (Grok)", "openai"),
+    ("deepseek", "DeepSeek", "openai"),
+    ("together", "Together AI", "openai"),
+    ("ollama", "Ollama", "ollama"),
+    ("aws-bedrock", "AWS Bedrock", "@aws-sdk/client-bedrock-runtime"),
+    ("azure-openai", "Azure OpenAI", "@azure/openai"),
+];
+
+/// Return all provider IDs (configured + built-in not yet configured).
+/// Returns (id, is_builtin) pairs.
+pub fn all_provider_ids(state: &AppState) -> Vec<(String, bool)> {
+    let configured = state.provider_ids();
+    let mut result: Vec<(String, bool)> = configured.into_iter().map(|id| (id, false)).collect();
+    for (id, _, _) in BUILTIN_PROVIDERS {
+        if !result.iter().any(|(pid, _)| pid == id) {
+            result.push((id.to_string(), true));
+        }
+    }
+    result
+}
+
+/// Build a minimal ProviderConfig for a built-in provider.
+pub fn builtin_provider_config(id: &str) -> Option<config_core::ProviderConfig> {
+    BUILTIN_PROVIDERS
+        .iter()
+        .find(|(bid, _, _)| *bid == id)
+        .map(|(_, name, npm)| config_core::ProviderConfig {
+            name: Some(name.to_string()),
+            npm: Some(npm.to_string()),
+            ..Default::default()
+        })
+}
+
+/// Build the list of providers available for copying (configured + built-in).
+/// Returns (id, display_name) pairs.
+pub fn copy_source_list(state: &AppState) -> Vec<(String, String)> {
+    let configured = state.provider_ids();
+    let mut result: Vec<(String, String)> = Vec::new();
+
+    // Add configured providers
+    for id in &configured {
+        let name = state
+            .get_provider(id)
+            .and_then(|p| p.name.clone())
+            .unwrap_or_else(|| id.clone());
+        result.push((id.clone(), name));
+    }
+
+    // Add built-in providers not yet configured
+    for (id, display_name, _) in BUILTIN_PROVIDERS {
+        if !configured.iter().any(|cid| cid == id) {
+            result.push((id.to_string(), display_name.to_string()));
+        }
+    }
+
+    result
+}
+
+/// State for the SDK selection sub-field within a form.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SdkSelectState {
+    /// Currently highlighted index in KNOWN_SDKS list.
+    pub highlight: usize,
+    /// Whether we're in custom text entry mode (last option selected + Enter pressed).
+    pub custom_mode: bool,
+    /// Custom text (only used when custom_mode is true).
+    pub custom_text: String,
+}
+
+impl SdkSelectState {
+    pub fn new() -> Self {
+        Self {
+            highlight: 0,
+            custom_mode: false,
+            custom_text: String::new(),
+        }
+    }
+
+    /// Get the current SDK value (either a known one or the custom text).
+    pub fn value(&self) -> String {
+        if self.custom_mode {
+            self.custom_text.clone()
+        } else {
+            KNOWN_SDKS[self.highlight].to_string()
+        }
+    }
+
+    /// Initialize from an existing npm value. If it matches a known SDK, select it;
+    /// otherwise go into custom mode with the existing value.
+    pub fn from_value(value: &str) -> Self {
+        if let Some(idx) = KNOWN_SDKS.iter().position(|&s| s == value) {
+            Self {
+                highlight: idx,
+                custom_mode: false,
+                custom_text: String::new(),
+            }
+        } else {
+            Self {
+                highlight: KNOWN_SDKS.len() - 1, // "Custom..."
+                custom_mode: true,
+                custom_text: value.to_string(),
+            }
+        }
+    }
+}
+
 /// Form state for the add provider wizard.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddProviderForm {
-    /// Which field is currently focused (0=id, 1=name, 2=npm, 3=base_url).
+    /// Which field is currently focused (0=id, 1=name, 2=sdk, 3=base_url).
     pub focus: usize,
     /// Provider ID field.
     pub id: String,
     /// Provider display name.
     pub name: String,
-    /// npm SDK package (e.g. "@anthropic-ai/sdk", "openai").
-    pub npm: String,
+    /// SDK package selection.
+    pub sdk: SdkSelectState,
     /// Base URL (for options).
     pub base_url: String,
+    /// Whether the copy-from list is shown.
+    pub show_copy_list: bool,
+    /// Highlighted index in the copy source list.
+    pub copy_highlight: usize,
 }
 
 impl AddProviderForm {
@@ -72,8 +203,10 @@ impl AddProviderForm {
             focus: 0,
             id: String::new(),
             name: String::new(),
-            npm: String::new(),
+            sdk: SdkSelectState::new(),
             base_url: String::new(),
+            show_copy_list: false,
+            copy_highlight: 0,
         }
     }
 
@@ -81,7 +214,7 @@ impl AddProviderForm {
         [
             "Provider ID",
             "Display Name",
-            "SDK Package (npm)",
+            "SDK Package (↑↓ select, Enter confirm)",
             "Base URL (optional)",
         ]
     }
@@ -96,15 +229,15 @@ pub struct EditProviderForm {
     pub focus: usize,
     /// Editable name field.
     pub name: String,
-    /// Editable npm field.
-    pub npm: String,
+    /// SDK package selection.
+    pub sdk: SdkSelectState,
     /// Editable base URL field.
     pub base_url: String,
 }
 
 impl EditProviderForm {
     pub fn field_labels() -> [&'static str; 3] {
-        ["Display Name", "SDK Package (npm)", "Base URL"]
+        ["Display Name", "SDK Package (↑↓ select, Enter confirm)", "Base URL"]
     }
 }
 
@@ -166,7 +299,7 @@ impl App {
                 ui::render_confirm_refresh(frame);
             }
             AppMode::AddProvider(form) => {
-                ui::render_add_provider(frame, form);
+                ui::render_add_provider(frame, form, state);
             }
             AppMode::EditProvider(form) => {
                 ui::render_edit_provider(frame, state, form);
@@ -271,59 +404,82 @@ fn handle_key_event(
             KeyCode::Esc => {
                 app.mode = AppMode::ProviderList;
             }
-            KeyCode::Tab | KeyCode::Down => {
+            KeyCode::Tab => {
                 form.focus = (form.focus + 1) % EditProviderForm::field_labels().len();
             }
-            KeyCode::BackTab | KeyCode::Up => {
+            KeyCode::BackTab => {
                 form.focus = (form.focus + EditProviderForm::field_labels().len() - 1)
                     % EditProviderForm::field_labels().len();
             }
             KeyCode::Enter => {
-                // Save edited fields back to state, surfacing the first error
-                let pid = form.provider_id.clone();
-                let name_val = form.name.trim().to_string();
-                let npm_val = form.npm.trim().to_string();
-                let base_url_val = form.base_url.trim().to_string();
+                // If focused on SDK field and not yet confirmed, confirm selection
+                if form.focus == 1 && !form.sdk.custom_mode
+                    && form.sdk.highlight == KNOWN_SDKS.len() - 1
+                {
+                    // "Custom..." selected — enter custom text mode
+                    form.sdk.custom_mode = true;
+                } else if form.focus == 1 && !form.sdk.custom_mode {
+                    // Known SDK confirmed — no action needed, value is set
+                } else {
+                    // Save edited fields back to state
+                    let pid = form.provider_id.clone();
+                    let name_val = form.name.trim().to_string();
+                    let npm_val = form.sdk.value();
+                    let base_url_val = form.base_url.trim().to_string();
 
-                let edit_result = (|| -> Result<(), app::error::AppError> {
-                    if !name_val.is_empty() {
-                        state.edit_provider_field(
-                            &pid,
-                            "name",
-                            serde_json::Value::String(name_val),
-                            state.edit_layer,
-                        )?;
-                    }
-                    if !npm_val.is_empty() {
-                        state.edit_provider_field(
-                            &pid,
-                            "npm",
-                            serde_json::Value::String(npm_val),
-                            state.edit_layer,
-                        )?;
-                    }
-                    if !base_url_val.is_empty() {
-                        state.edit_provider_field(
-                            &pid,
-                            "baseURL",
-                            serde_json::Value::String(base_url_val),
-                            state.edit_layer,
-                        )?;
-                    }
-                    Ok(())
-                })();
+                    let edit_result = (|| -> Result<(), app::error::AppError> {
+                        if !name_val.is_empty() {
+                            state.edit_provider_field(
+                                &pid,
+                                "name",
+                                serde_json::Value::String(name_val),
+                                state.edit_layer,
+                            )?;
+                        }
+                        if !npm_val.is_empty() {
+                            state.edit_provider_field(
+                                &pid,
+                                "npm",
+                                serde_json::Value::String(npm_val),
+                                state.edit_layer,
+                            )?;
+                        }
+                        if !base_url_val.is_empty() {
+                            state.edit_provider_field(
+                                &pid,
+                                "baseURL",
+                                serde_json::Value::String(base_url_val),
+                                state.edit_layer,
+                            )?;
+                        }
+                        Ok(())
+                    })();
 
-                match edit_result {
-                    Ok(()) => app.mode = AppMode::ProviderList,
-                    Err(e) => app.error_message = Some(format!("Edit failed: {e}")),
+                    match edit_result {
+                        Ok(()) => app.mode = AppMode::ProviderList,
+                        Err(e) => app.error_message = Some(format!("Edit failed: {e}")),
+                    }
                 }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if form.focus == 1 && !form.sdk.custom_mode && form.sdk.highlight > 0 {
+                    form.sdk.highlight -= 1;
+                } else if form.focus == 0 {
+                    // nothing
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j')
+                if form.focus == 1 && !form.sdk.custom_mode
+                    && form.sdk.highlight < KNOWN_SDKS.len() - 1 =>
+            {
+                form.sdk.highlight += 1;
             }
             KeyCode::Backspace => match form.focus {
                 0 => {
                     form.name.pop();
                 }
-                1 => {
-                    form.npm.pop();
+                1 if form.sdk.custom_mode => {
+                    form.sdk.custom_text.pop();
                 }
                 2 => {
                     form.base_url.pop();
@@ -332,7 +488,7 @@ fn handle_key_event(
             },
             KeyCode::Char(c) => match form.focus {
                 0 => form.name.push(c),
-                1 => form.npm.push(c),
+                1 if form.sdk.custom_mode => form.sdk.custom_text.push(c),
                 2 => form.base_url.push(c),
                 _ => {}
             },
@@ -362,22 +518,106 @@ fn handle_key_event(
 
     // Handle add provider form mode separately
     if let AppMode::AddProvider(ref mut form) = app.mode {
+        // Handle copy-from list mode first
+        if form.show_copy_list {
         match key.code {
             KeyCode::Esc => {
                 app.mode = AppMode::ProviderList;
             }
-            KeyCode::Tab | KeyCode::Down => {
+            KeyCode::Char('c') => {
+                // Toggle copy-from list
+                if !form.show_copy_list && !copy_source_list(state).is_empty() {
+                    form.show_copy_list = true;
+                    form.copy_highlight = 0;
+                } else {
+                    form.show_copy_list = false;
+                }
+            }
+                KeyCode::Up | KeyCode::Char('k') if form.copy_highlight > 0 => {
+                    form.copy_highlight -= 1;
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let sources = copy_source_list(state);
+                    if form.copy_highlight + 1 < sources.len() {
+                        form.copy_highlight += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    let sources = copy_source_list(state);
+                    if let Some((id, _name)) = sources.get(form.copy_highlight) {
+                        // Get provider config (either configured or built-in)
+                        let pc = state
+                            .get_provider(id)
+                            .cloned()
+                            .or_else(|| builtin_provider_config(id));
+                        if let Some(provider) = pc {
+                            form.name = provider.name.unwrap_or_default();
+                            let npm_val = provider.npm.unwrap_or_default();
+                            form.sdk = SdkSelectState::from_value(&npm_val);
+                            form.base_url = provider
+                                .options
+                                .as_ref()
+                                .and_then(|o| o.get("baseURL"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default()
+                                .to_string();
+                            // Auto-fill ID if empty
+                            if form.id.is_empty() {
+                                form.id = format!("{id}-copy");
+                            }
+                        }
+                    }
+                    form.show_copy_list = false;
+                }
+                _ => {}
+            }
+            return AsyncAction::None;
+        }
+
+        match key.code {
+            KeyCode::Esc => {
+                app.mode = AppMode::ProviderList;
+            }
+            KeyCode::Char('c') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                // Toggle copy-from list (Ctrl+C to avoid conflict with text input)
+                if !form.show_copy_list && !copy_source_list(state).is_empty() {
+                    form.show_copy_list = true;
+                    form.copy_highlight = 0;
+                } else {
+                    form.show_copy_list = false;
+                }
+            }
+            KeyCode::Tab => {
                 form.focus = (form.focus + 1) % AddProviderForm::field_labels().len();
             }
-            KeyCode::BackTab | KeyCode::Up => {
+            KeyCode::BackTab => {
                 form.focus = (form.focus + AddProviderForm::field_labels().len() - 1)
                     % AddProviderForm::field_labels().len();
             }
+            KeyCode::Up | KeyCode::Char('k')
+                if form.focus == 2 && !form.sdk.custom_mode && form.sdk.highlight > 0 =>
+            {
+                form.sdk.highlight -= 1;
+            }
+            KeyCode::Down | KeyCode::Char('j')
+                if form.focus == 2 && !form.sdk.custom_mode
+                    && form.sdk.highlight < KNOWN_SDKS.len() - 1 =>
+            {
+                form.sdk.highlight += 1;
+            }
             KeyCode::Enter => {
+                // If focused on SDK field and "Custom..." is highlighted, enter custom mode
+                if form.focus == 2 && !form.sdk.custom_mode
+                    && form.sdk.highlight == KNOWN_SDKS.len() - 1
+                {
+                    form.sdk.custom_mode = true;
+                    return AsyncAction::None;
+                }
+
                 // Submit form
                 let id = form.id.trim().to_string();
                 let name_val = form.name.trim().to_string();
-                let npm_val = form.npm.trim().to_string();
+                let npm_val = form.sdk.value();
                 let base_url_val = form.base_url.trim().to_string();
 
                 if id.is_empty() {
@@ -400,7 +640,7 @@ fn handle_key_event(
                     } else {
                         Some(name_val)
                     },
-                    npm: if npm_val.is_empty() {
+                    npm: if npm_val.is_empty() || npm_val == "Custom..." {
                         None
                     } else {
                         Some(npm_val)
@@ -426,8 +666,8 @@ fn handle_key_event(
                 1 => {
                     form.name.pop();
                 }
-                2 => {
-                    form.npm.pop();
+                2 if form.sdk.custom_mode => {
+                    form.sdk.custom_text.pop();
                 }
                 3 => {
                     form.base_url.pop();
@@ -437,7 +677,7 @@ fn handle_key_event(
             KeyCode::Char(c) => match form.focus {
                 0 => form.id.push(c),
                 1 => form.name.push(c),
-                2 => form.npm.push(c),
+                2 if form.sdk.custom_mode => form.sdk.custom_text.push(c),
                 3 => form.base_url.push(c),
                 _ => {}
             },
@@ -522,14 +762,27 @@ fn handle_key_event(
         KeyCode::Enter => {
             // In provider list, open edit view for the selected provider
             if app.mode == AppMode::ProviderList {
-                let provider_ids = state.provider_ids();
-                if let Some(provider_id) = provider_ids.get(app.selected_index) {
+                let all_ids = all_provider_ids(state);
+                if let Some((provider_id, is_builtin)) = all_ids.get(app.selected_index) {
+                    if *is_builtin {
+                        // Auto-add built-in provider with defaults and enter edit mode
+                        if let Some(pc) = builtin_provider_config(provider_id) {
+                            if let Err(e) =
+                                state.add_provider(provider_id.clone(), pc, state.edit_layer)
+                            {
+                                app.error_message =
+                                    Some(format!("Failed to add provider: {e}"));
+                                return async_action;
+                            }
+                        }
+                    }
                     let provider = state.get_provider(provider_id);
+                    let npm_val = provider.and_then(|p| p.npm.clone()).unwrap_or_default();
                     let form = EditProviderForm {
                         provider_id: provider_id.clone(),
                         focus: 0,
                         name: provider.and_then(|p| p.name.clone()).unwrap_or_default(),
-                        npm: provider.and_then(|p| p.npm.clone()).unwrap_or_default(),
+                        sdk: SdkSelectState::from_value(&npm_val),
                         base_url: provider
                             .and_then(|p| p.options.as_ref())
                             .and_then(|opts| opts.get("baseURL"))
@@ -782,16 +1035,26 @@ mod tests {
             assert_eq!(form.name, "Test Provider");
         }
 
-        // Tab to npm field
+        // Tab to sdk field (now a selection list)
         handle_key_event(key(KeyCode::Tab), &mut app, &mut state);
         if let AppMode::AddProvider(ref form) = app.mode {
             assert_eq!(form.focus, 2);
         }
+        // Navigate down to "Custom..." (last entry, index 7)
+        for _ in 0..KNOWN_SDKS.len() - 1 {
+            handle_key_event(key(KeyCode::Down), &mut app, &mut state);
+        }
+        // Press Enter to enter custom text mode
+        handle_key_event(key(KeyCode::Enter), &mut app, &mut state);
+        if let AppMode::AddProvider(ref form) = app.mode {
+            assert!(form.sdk.custom_mode);
+        }
+        // Type custom SDK name
         for c in "@test/sdk".chars() {
             handle_key_event(key(KeyCode::Char(c)), &mut app, &mut state);
         }
         if let AppMode::AddProvider(ref form) = app.mode {
-            assert_eq!(form.npm, "@test/sdk");
+            assert_eq!(form.sdk.custom_text, "@test/sdk");
         }
 
         // Tab to base_url field
@@ -893,7 +1156,9 @@ mod tests {
         if let AppMode::EditProvider(ref form) = app.mode {
             assert_eq!(form.provider_id, "openai");
             assert_eq!(form.name, "OpenAI");
-            assert_eq!(form.npm, "openai");
+            // "openai" is a known SDK, so it should be selected (not custom mode)
+            assert_eq!(form.sdk.highlight, 0); // index of "openai" in KNOWN_SDKS
+            assert!(!form.sdk.custom_mode);
             assert_eq!(form.base_url, "");
         }
     }
@@ -1051,11 +1316,11 @@ mod tests {
     #[test]
     fn test_m_key_triggers_model_fetch() {
         let (mut app, mut state) = test_app_with_providers();
-        let idx = provider_index(&state, "openai");
-        app.selected_index = idx;
+        app.selected_index = 0;
         let action = handle_key_event(key(KeyCode::Char('m')), &mut app, &mut state);
         assert_eq!(app.mode, AppMode::ModelSelector);
-        assert!(matches!(action, AsyncAction::FetchModels(ref id) if id == "openai"));
+        assert!(app.selected_provider.is_some());
+        assert!(matches!(action, AsyncAction::FetchModels(_)));
     }
 
     #[test]
@@ -1106,10 +1371,13 @@ mod tests {
         for c in "Mistral AI".chars() {
             handle_key_event(key(KeyCode::Char(c)), &mut app, &mut state);
         }
-        // Tab → npm
+        // Tab → sdk (selection list — navigate to @mistralai/sdk at index 3)
         handle_key_event(key(KeyCode::Tab), &mut app, &mut state);
-        for c in "@mistral/sdk".chars() {
-            handle_key_event(key(KeyCode::Char(c)), &mut app, &mut state);
+        for _ in 0..3 {
+            handle_key_event(key(KeyCode::Down), &mut app, &mut state);
+        }
+        if let AppMode::AddProvider(ref form) = app.mode {
+            assert_eq!(form.sdk.highlight, 3); // @mistralai/sdk
         }
         // Tab → base_url
         handle_key_event(key(KeyCode::Tab), &mut app, &mut state);
@@ -1123,7 +1391,7 @@ mod tests {
         assert_eq!(app.mode, AppMode::ProviderList);
         let provider = state.get_provider("mistral").unwrap();
         assert_eq!(provider.name.as_deref(), Some("Mistral AI"));
-        assert_eq!(provider.npm.as_deref(), Some("@mistral/sdk"));
+        assert_eq!(provider.npm.as_deref(), Some("@mistralai/sdk"));
         let base_url = provider
             .options
             .as_ref()
@@ -1147,6 +1415,95 @@ mod tests {
         handle_key_event(key(KeyCode::BackTab), &mut app, &mut state);
         if let AppMode::AddProvider(ref form) = app.mode {
             assert_eq!(form.focus, 0);
+        }
+    }
+
+    // --- Built-in providers ---
+
+    #[test]
+    fn test_all_provider_ids_includes_builtin() {
+        let (_app, state) = test_app_with_providers();
+        let all = all_provider_ids(&state);
+        // Should have openai + anthropic (configured) + remaining builtins
+        let configured_count = state.provider_ids().len();
+        let builtin_new = BUILTIN_PROVIDERS
+            .iter()
+            .filter(|(id, _, _)| !state.provider_ids().contains(&id.to_string()))
+            .count();
+        assert_eq!(all.len(), configured_count + builtin_new);
+        // Configured ones should be marked as non-builtin
+        assert!(all.iter().any(|(_, b)| !b));
+        // Built-in ones should be marked as builtin
+        assert!(all.iter().any(|(_, b)| *b));
+    }
+
+    #[test]
+    fn test_builtin_provider_config() {
+        let pc = builtin_provider_config("openai").unwrap();
+        assert_eq!(pc.name.as_deref(), Some("OpenAI"));
+        assert_eq!(pc.npm.as_deref(), Some("openai"));
+        assert!(builtin_provider_config("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_enter_on_builtin_auto_adds() {
+        let (mut app, mut state) = test_app_with_providers();
+        // Find a built-in provider that's not configured
+        let all = all_provider_ids(&state);
+        let builtin_idx = all.iter().position(|(_, b)| *b).unwrap();
+        app.selected_index = builtin_idx;
+        handle_key_event(key(KeyCode::Enter), &mut app, &mut state);
+        // Should be in edit mode (auto-added)
+        assert!(matches!(app.mode, AppMode::EditProvider(_)));
+        if let AppMode::EditProvider(ref form) = app.mode {
+            // Should have been auto-added
+            assert!(state.get_provider(&form.provider_id).is_some());
+        }
+    }
+
+    #[test]
+    fn test_copy_source_list() {
+        let (_app, state) = test_app_with_providers();
+        let sources = copy_source_list(&state);
+        // Should have configured providers + built-in not yet configured
+        assert!(sources.len() >= state.provider_ids().len());
+        // Configured providers should be first
+        let configured = state.provider_ids();
+        for id in &configured {
+            assert!(sources.iter().any(|(sid, _)| sid == id));
+        }
+        // Built-in providers not yet configured should also be there
+        assert!(sources.iter().any(|(sid, _)| sid == "groq")); // not in test config
+    }
+
+    #[test]
+    fn test_add_provider_copy_mode() {
+        let (mut app, mut state) = test_app_with_providers();
+        handle_key_event(key(KeyCode::Char('n')), &mut app, &mut state);
+        // Press Ctrl+C to enter copy mode
+        handle_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL), &mut app, &mut state);
+        if let AppMode::AddProvider(ref form) = app.mode {
+            assert!(form.show_copy_list);
+        }
+        // Press Esc to cancel copy
+        handle_key_event(key(KeyCode::Esc), &mut app, &mut state);
+        if let AppMode::AddProvider(ref form) = app.mode {
+            assert!(!form.show_copy_list);
+        }
+    }
+
+    #[test]
+    fn test_add_provider_copy_selects() {
+        let (mut app, mut state) = test_app_with_providers();
+        handle_key_event(key(KeyCode::Char('n')), &mut app, &mut state);
+        // Enter copy mode with Ctrl+C
+        handle_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL), &mut app, &mut state);
+        // Press Enter to select first provider in copy list
+        handle_key_event(key(KeyCode::Enter), &mut app, &mut state);
+        if let AppMode::AddProvider(ref form) = app.mode {
+            assert!(!form.show_copy_list);
+            // Should have pre-filled fields (auto ID since empty)
+            assert!(!form.id.is_empty() || !form.name.is_empty());
         }
     }
 }

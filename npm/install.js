@@ -2,9 +2,10 @@
 
 /**
  * postinstall: download the platform-appropriate `opm` binary
- * from the latest GitHub Release.
+ * from the latest GitHub Release with SHA256 checksum verification.
  */
 
+const crypto = require("crypto");
 const https = require("https");
 const fs = require("fs");
 const path = require("path");
@@ -52,6 +53,35 @@ function httpGet(url, opts = {}) {
   });
 }
 
+// ── Download to buffer ──────────────────────────────────────────────
+async function downloadToBuffer(url) {
+  const res = await httpGet(url);
+  const chunks = [];
+  return new Promise((resolve, reject) => {
+    res.on("data", (chunk) => chunks.push(chunk));
+    res.on("end", () => resolve(Buffer.concat(chunks)));
+    res.on("error", reject);
+  });
+}
+
+// ── Fetch and parse checksums.txt ───────────────────────────────────
+async function fetchChecksums() {
+  const url = `https://github.com/${REPO}/releases/download/v${VERSION}/checksums.txt`;
+  const buf = await downloadToBuffer(url);
+  const text = buf.toString("utf-8");
+  // Format: "<hash>  <filename>" per line (sha256sum output)
+  const map = new Map();
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const [hash, filename] = trimmed.split(/\s+/);
+    if (hash && filename) {
+      map.set(filename, hash);
+    }
+  }
+  return map;
+}
+
 // ── Main ────────────────────────────────────────────────────────────
 async function main() {
   const { filename, platform: _pf } = getTarget();
@@ -62,19 +92,33 @@ async function main() {
 
   fs.mkdirSync(BIN_DIR, { recursive: true });
 
-  const res = await httpGet(url);
+  // Download binary and checksums in parallel
+  const [binaryBuf, checksums] = await Promise.all([
+    downloadToBuffer(url),
+    fetchChecksums().catch(() => null),
+  ]);
 
-  await new Promise((resolve, reject) => {
-    const stream = fs.createWriteStream(localBin, { mode: 0o755 });
-    // GitHub may send gzip for binary assets
-    if (res.headers["content-encoding"] === "gzip") {
-      res.pipe(zlib.createGunzip()).pipe(stream);
+  // Verify checksum
+  if (checksums) {
+    const expected = checksums.get(filename);
+    if (expected) {
+      const actual = crypto.createHash("sha256").update(binaryBuf).digest("hex");
+      if (actual !== expected) {
+        throw new Error(
+          `SHA256 checksum mismatch!\n  expected: ${expected}\n  actual:   ${actual}\n` +
+            "The binary may have been tampered with. Aborting."
+        );
+      }
+      console.log("opm-cli: checksum verified ✓");
     } else {
-      res.pipe(stream);
+      console.warn(`opm-cli: warning — no checksum found for ${filename} in checksums.txt`);
     }
-    stream.on("finish", resolve);
-    stream.on("error", reject);
-  });
+  } else {
+    console.warn("opm-cli: warning — could not fetch checksums.txt, skipping verification");
+  }
+
+  // Write binary
+  fs.writeFileSync(localBin, binaryBuf, { mode: 0o755 });
 
   // Ensure executable on non-Windows
   if (process.platform !== "win32") {

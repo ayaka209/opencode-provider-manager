@@ -127,9 +127,46 @@ async fn run_tui(layer: Option<String>, config: Option<String>, split: bool) -> 
     // Initialize app state
     let mut state = AppState::new().context("Failed to initialize app state")?;
 
-    // Apply custom config path if provided
+    // Apply custom config path if provided (validate for security)
     if let Some(ref path_str) = config {
-        state.paths.custom = Some(std::path::PathBuf::from(path_str));
+        let config_path = std::path::PathBuf::from(path_str);
+
+        // Validate file extension
+        let ext = config_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        if ext != "json" {
+            return Err(anyhow::anyhow!(
+                "Invalid --config path: file must have .json extension, got '{}'",
+                path_str
+            ));
+        }
+
+        // Canonicalize to resolve symlinks and path traversal
+        let canonical = if config_path.exists() {
+            config_path
+                .canonicalize()
+                .context("Failed to resolve config path")?
+        } else {
+            // File doesn't exist yet — canonicalize parent dir if possible
+            if let Some(parent) = config_path.parent() {
+                if parent.as_os_str().is_empty() {
+                    config_path.clone()
+                } else if parent.exists() {
+                    let canon_parent = parent
+                        .canonicalize()
+                        .context("Failed to resolve config directory")?;
+                    canon_parent.join(config_path.file_name().unwrap())
+                } else {
+                    config_path.clone()
+                }
+            } else {
+                config_path.clone()
+            }
+        };
+
+        state.paths.custom = Some(canonical);
     }
 
     // Apply explicit layer selection
@@ -190,7 +227,7 @@ fn run_list_providers(layer_str: &str) -> Result<()> {
     Ok(())
 }
 
-/// Show config as JSON.
+/// Show config as JSON (with sensitive values redacted).
 fn run_show_config(layer_str: &str) -> Result<()> {
     let mut state = AppState::new().context("Failed to initialize app state")?;
     state.load_configs().context("Failed to load configs")?;
@@ -199,12 +236,48 @@ fn run_show_config(layer_str: &str) -> Result<()> {
     let config = get_config_for_layer(&state, layer_str)
         .with_context(|| format!("Invalid layer: {}", layer_str))?;
 
+    // Deep-clone and redact sensitive fields before serialization
+    let mut redacted = config.clone();
+    redact_sensitive_values(&mut redacted);
+
     // Output as pretty JSON
     let json =
-        serde_json::to_string_pretty(config).context("Failed to serialize config to JSON")?;
+        serde_json::to_string_pretty(&redacted).context("Failed to serialize config to JSON")?;
     println!("{}", json);
 
     Ok(())
+}
+
+/// Key names that should be redacted from JSON output.
+const SENSITIVE_KEYS: &[&str] = &[
+    "apiKey",
+    "apikey",
+    "key",
+    "secret",
+    "token",
+    "password",
+    "credential",
+    "privateKey",
+    "private_key",
+    "accessToken",
+    "access_token",
+    "refreshToken",
+    "refresh_token",
+];
+
+/// Recursively redact sensitive string values in a config.
+fn redact_sensitive_values(config: &mut config_core::OpenCodeConfig) {
+    if let Some(ref mut providers) = config.provider {
+        for provider in providers.values_mut() {
+            if let Some(ref mut options) = provider.options {
+                for (key, value) in options.iter_mut() {
+                    if SENSITIVE_KEYS.contains(&key.as_str()) && value.is_string() {
+                        *value = serde_json::Value::String("***".to_string());
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Validate config files.

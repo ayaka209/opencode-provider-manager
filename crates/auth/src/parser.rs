@@ -13,7 +13,7 @@ use crate::error::{AuthError, Result};
 pub type AuthEntries = HashMap<String, AuthEntry>;
 
 /// A single provider's auth entry.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct AuthEntry {
     /// Auth type (e.g., "api", "oauth").
     #[serde(rename = "type")]
@@ -30,6 +30,19 @@ pub struct AuthEntry {
     /// Additional fields we don't explicitly model.
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
+}
+
+// Manual Debug impl that redacts sensitive fields to prevent accidental
+// secret exposure in logs or error output.
+impl std::fmt::Debug for AuthEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthEntry")
+            .field("auth_type", &self.auth_type)
+            .field("key", &self.key.as_ref().map(|_| "***"))
+            .field("token", &self.token.as_ref().map(|_| "***"))
+            .field("extra", &self.extra)
+            .finish()
+    }
 }
 
 /// Parse auth.json from a file path.
