@@ -22,9 +22,6 @@ jobs:
   publish:
     name: Publish to npm
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: npm
 
     steps:
       - name: Resolve tag
@@ -50,6 +47,7 @@ jobs:
 
       - name: Verify npm version matches tag
         shell: bash
+        working-directory: npm
         run: |
           PACKAGE_VERSION=$(node -p "require('./package.json').version")
           TAG_VERSION="${{ steps.tag.outputs.value }}"
@@ -60,10 +58,10 @@ jobs:
           fi
 
       - name: Check package contents
+        working-directory: npm
         run: npm pack --dry-run
 
       - name: Publish package
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        working-directory: npm
         run: npm publish --access public --provenance
 

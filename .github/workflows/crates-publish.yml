@@ -17,6 +17,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: crates-publish-${{ github.event.release.tag_name || inputs.tag }}
@@ -78,12 +79,10 @@ jobs:
 
       - name: Publish main crate
         if: steps.release.outputs.dry_run != 'true'
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          cargo publish --locked -p opencode-provider-manager --token "$CARGO_REGISTRY_TOKEN"
+          cargo publish --locked -p opencode-provider-manager
 
       - name: Wait for main crate to appear in crates.io index
         if: steps.release.outputs.dry_run != 'true'
@@ -103,9 +102,7 @@ jobs:
 
       - name: Publish GUI crate
         if: steps.release.outputs.dry_run != 'true'
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          cargo publish --locked -p opencode-provider-manager-gui --token "$CARGO_REGISTRY_TOKEN"
+          cargo publish --locked -p opencode-provider-manager-gui
