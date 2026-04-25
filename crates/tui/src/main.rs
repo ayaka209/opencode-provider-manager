@@ -22,7 +22,7 @@ struct Args {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// Start with a specific config layer view (for TUI mode).
+    /// Start with a specific config layer view (for TUI mode, defaults to project).
     #[arg(long, value_name = "LAYER", global = true)]
     layer: Option<String>,
 
@@ -40,7 +40,7 @@ struct Args {
 enum Commands {
     /// Launch the TUI (default behavior).
     Tui {
-        /// Start with a specific config layer view.
+        /// Start with a specific config layer view (defaults to project).
         #[arg(long, value_name = "LAYER")]
         layer: Option<String>,
 
@@ -55,14 +55,14 @@ enum Commands {
 
     /// List configured providers as JSON.
     ListProviders {
-        /// Which config layer to read from (merged, global, project).
+        /// Which config layer to read from (defaults to merged).
         #[arg(long, value_name = "LAYER", default_value = "merged")]
         layer: String,
     },
 
     /// Show config as JSON.
     ShowConfig {
-        /// Which config layer to show (merged, global, project).
+        /// Which config layer to show (defaults to merged).
         #[arg(long, value_name = "LAYER", default_value = "merged")]
         layer: String,
     },

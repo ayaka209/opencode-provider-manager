@@ -72,7 +72,7 @@ The binary will be at `target/release/opm`.
 opm                  # Launch TUI
 opm --split          # Start in split view (global vs project)
 opm --config PATH   # Use a custom config file path
-opm --layer LAYER    # Start with a specific config layer (global/project/custom)
+opm --layer LAYER    # Start with a specific edit layer (default: project)
 ```
 
 #### Key Bindings
@@ -98,11 +98,15 @@ opm --layer LAYER    # Start with a specific config layer (global/project/custom
 ### CLI Mode
 
 ```bash
-opm list-providers [--layer merged|global|project|custom]   # List providers as JSON
-opm show-config [--layer merged|global|project|custom]      # Show config as JSON
+opm list-providers [--layer merged|global|project|custom]   # List providers as JSON (default: merged)
+opm show-config [--layer merged|global|project|custom]      # Show config as JSON (default: merged)
 opm validate                                                 # Validate configs, exit 0/1
 opm import --input PATH_OR_URL_OR_SNIPPET --layer project    # Import JSON/TOML/YAML into a layer
 ```
+
+When you **add a provider**, **edit a provider**, or **add a model** in the TUI,
+the default edit target is the **project** layer unless you explicitly switch
+it with `--layer`.
 
 ### GUI Mode
 
