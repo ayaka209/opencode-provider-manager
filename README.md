@@ -146,6 +146,92 @@ preserved during import. Imported configs include a top-level `_opmImport`
 metadata field with the source URL/path as provenance; secrets are not displayed
 by `show-config`.
 
+### Extending an existing provider vs adding a new provider
+
+There are two common import/update flows:
+
+1. **Extend an existing provider** — use the same provider ID as a provider that
+   already exists in the target layer or merged config. The imported data is
+   merged into that provider, which is ideal when a known provider adds a new
+   model before `models.dev` catches up.
+2. **Add a new provider** — use a brand-new provider ID. This creates a new
+   provider entry, which is what you want for a new vendor, a new endpoint, or
+   your own OpenAI-compatible deployment.
+
+For example, suppose `volcengine-plan` already exists, but Volcano Engine has
+released `ark-code-next` and `models.dev` has not listed it yet. You can extend
+the existing provider by importing a small overlay into your project layer:
+
+```json
+{
+  "provider": {
+    "volcengine-plan": {
+      "models": {
+        "ark-code-next": {
+          "name": "ark-code-next",
+          "limit": {
+            "context": 256000,
+            "output": 8192
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+```bash
+opm import --input ./volcengine-ark-code-next.json --layer project
+```
+
+Because the provider ID is still `volcengine-plan`, this **extends** the
+existing provider instead of creating a duplicate. In contrast, if you imported
+the same model under a new provider ID such as `volcengine-plan-beta`, Provider
+Manager would treat that as **adding a new provider**.
+
+Use the project layer for these quick model overlays when you want to keep the
+upstream global/built-in provider definition intact and only patch your current
+workspace until `models.dev` or your shared config source is updated.
+
+### Importing from GitHub / an unmerged PR
+
+Provider Manager does not need a merge to happen first. If a provider/model
+change lives in a GitHub branch or PR, you can still import it in two practical
+ways:
+
+1. **Import a raw file URL** — useful when the PR changes a single JSON, TOML,
+   YAML, or JSONC file.
+2. **Check out the PR locally and import the directory** — useful when the PR
+   contains a models.dev-style provider directory with `provider.toml` plus
+   `models/*.toml`.
+
+For example, if PR `#123` adds a new model file before it is merged, you can
+check out the PR branch locally and import from the working tree:
+
+```bash
+gh pr checkout 123
+opm import --input ./providers/xiaomi-token-plan-cn --layer project
+```
+
+Or, if you just want one file from the PR branch, import the raw GitHub URL
+directly:
+
+```bash
+opm import \
+  --input https://raw.githubusercontent.com/OWNER/REPO/BRANCH/providers/xiaomi-token-plan-cn/models/new-model.toml \
+  --provider-id xiaomi-token-plan-cn \
+  --layer project
+```
+
+This works well for reviewing provider updates from a fork or feature branch
+before the upstream PR is merged. If you are importing only a single model file,
+remember to pass `--provider-id` so Provider Manager knows which existing
+provider to extend.
+
 ## Configuration
 
 OpenCode uses a layered config system:
