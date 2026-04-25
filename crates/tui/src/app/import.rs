@@ -1,8 +1,8 @@
 //! Config import and export functionality.
 
-use crate::error::{AppError, Result};
-use crate::state::AppState;
-use config_core::{ConfigLayer, ModelConfig, ModelLimit, OpenCodeConfig, ProviderConfig};
+use super::error::{AppError, Result};
+use super::state::AppState;
+use crate::config_core::{ConfigLayer, ModelConfig, ModelLimit, OpenCodeConfig, ProviderConfig};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -97,7 +97,10 @@ pub fn apply_import_config(
 
             match target {
                 Some(existing) => {
-                    *target = Some(config_core::merge_two(existing.clone(), external_config));
+                    *target = Some(crate::config_core::merge_two(
+                        existing.clone(),
+                        external_config,
+                    ));
                 }
                 None => {
                     *target = Some(external_config);
@@ -129,7 +132,7 @@ pub fn export_config(state: &AppState, path: &Path, export_scope: ExportScope) -
             .ok_or_else(|| AppError::State("No custom config".to_string()))?,
     };
 
-    config_core::jsonc::write_config(config, path)?;
+    crate::config_core::jsonc::write_config(config, path)?;
     Ok(())
 }
 
@@ -152,7 +155,7 @@ fn parse_import_directory(dir: &Path, provider_id_hint: Option<&str>) -> Result<
     let mut merged = OpenCodeConfig::default();
     for path in collect_importable_files(dir)? {
         let parsed = parse_import_path(&path, provider_id_hint)?;
-        merged = config_core::merge_two(merged, parsed);
+        merged = crate::config_core::merge_two(merged, parsed);
     }
     if merged == OpenCodeConfig::default() {
         return Err(AppError::Import(format!(
@@ -267,7 +270,7 @@ fn parse_github_directory(
                     provider_id_hint,
                     Some(&download_url),
                 )?;
-                merged = config_core::merge_two(merged, parsed);
+                merged = crate::config_core::merge_two(merged, parsed);
             }
         }
     }
@@ -432,7 +435,7 @@ fn model_from_value(value: Value) -> Result<ModelConfig> {
 fn parse_loose_value(content: &str) -> Result<Value> {
     let trimmed = content.trim_start();
     if (trimmed.starts_with('{') || trimmed.starts_with('['))
-        && let Ok(handler) = config_core::jsonc::JsoncHandler::parse(content)
+        && let Ok(handler) = crate::config_core::jsonc::JsoncHandler::parse(content)
     {
         return serde_json::from_str(&handler.to_json_string()?).map_err(AppError::from);
     }

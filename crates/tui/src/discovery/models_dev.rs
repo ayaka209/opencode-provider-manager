@@ -2,9 +2,9 @@
 //!
 //! Endpoint: https://models.dev/api.json
 
-use crate::cache::CacheManager;
-use crate::error::Result;
-use crate::{DiscoveredModel, DiscoveredProvider};
+use super::cache::CacheManager;
+use super::error::Result;
+use super::{DiscoveredModel, DiscoveredProvider};
 use reqwest::Client;
 use serde::Deserialize;
 
@@ -46,12 +46,12 @@ impl ModelsDevClient {
             .get(&self.api_url)
             .send()
             .await
-            .map_err(|e| crate::error::DiscoveryError::Network(e.to_string()))?;
+            .map_err(|e| super::error::DiscoveryError::Network(e.to_string()))?;
 
         let providers: ModelsDevResponse = response
             .json()
             .await
-            .map_err(|e| crate::error::DiscoveryError::Parse(e.to_string()))?;
+            .map_err(|e| super::error::DiscoveryError::Parse(e.to_string()))?;
 
         Ok(providers.into_providers())
     }

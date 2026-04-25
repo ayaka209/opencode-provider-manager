@@ -56,6 +56,12 @@ cd opencode-provider-manager
 cargo build --release
 ```
 
+Published package names:
+
+- crates.io: `opencode-provider-manager`
+- crates.io: `opencode-provider-manager-gui`
+- npm: `opencode-provider-manager`
+
 The binary will be at `target/release/opm`.
 
 ## Usage
@@ -95,15 +101,50 @@ opm --layer LAYER    # Start with a specific config layer (global/project/custom
 opm list-providers [--layer merged|global|project|custom]   # List providers as JSON
 opm show-config [--layer merged|global|project|custom]      # Show config as JSON
 opm validate                                                 # Validate configs, exit 0/1
+opm import --input PATH_OR_URL_OR_SNIPPET --layer project    # Import JSON/TOML/YAML into a layer
 ```
 
 ### GUI Mode
 
 ```bash
-cargo run --bin opm-gui --features gui
+cargo run --bin opm-gui
 ```
 
-> Note: The GUI is a placeholder and not yet functional. It will be developed as a feature-gated alternative to the TUI.
+The GUI is built as a separate `opm-gui` binary so the TUI binary does not link
+egui/eframe. It provides a merged provider overview plus layer-aware import
+controls for global, project, and custom configs.
+
+### Importing provider/model snippets
+
+Imports can target `global`, `project`, or `custom` layers and can merge into the
+existing layer or replace it:
+
+```bash
+# Import a full opencode.json / JSONC config into the project layer
+opm import --input ./opencode-provider.json --layer project
+
+# Import a provider fragment that does not include its provider ID
+opm import --input ./provider.toml --provider-id xiaomi-token-plan-cn --layer global
+
+# Import a models.dev-style provider directory from GitHub
+opm import --input https://github.com/MiyakoMeow/models.dev/tree/dev/providers/xiaomi-token-plan-cn --layer project
+
+# Preview without saving
+opm import --input ./providers --layer project --dry-run
+```
+
+Supported import shapes:
+
+- Full `opencode.json` / JSONC configs containing `provider`, `model`, `$schema`, etc.
+- Provider maps such as `{ "volcengine-plan": { "npm": "...", "models": { ... } } }`.
+- Single provider fragments, when paired with `--provider-id` or imported from a named file/directory.
+- Local directories containing JSON, JSONC, TOML, YAML, or models.dev-style `provider.toml` plus `models/*.toml`.
+- GitHub `tree` URLs for models.dev-style provider directories.
+
+Unknown provider/model fields such as `modalities`, `cost`, `family`, and docs are
+preserved during import. Imported configs include a top-level `_opmImport`
+metadata field with the source URL/path as provenance; secrets are not displayed
+by `show-config`.
 
 ## Configuration
 

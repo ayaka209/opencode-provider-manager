@@ -4,16 +4,15 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description = "Standalone GUI binary crate for managing OpenCode provider configs"
+repository.workspace = true
 
 [[bin]]
 name = "opm-gui"
 path = "src/main.rs"
 
 [dependencies]
-app = { workspace = true }
-config-core = { workspace = true }
-discovery = { workspace = true }
-auth = { workspace = true }
+"opencode-provider-manager" = { path = "../tui", version = "0.1.1" }
 egui = { workspace = true }
 eframe = { workspace = true }
 anyhow = { workspace = true }

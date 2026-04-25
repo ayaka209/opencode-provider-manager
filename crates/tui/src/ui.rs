@@ -1,16 +1,21 @@
 //! TUI UI rendering functions.
 
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
-use ratatui::Frame;
 
 use app::state::AppState;
-use auth::provider_env_var;
-use config_core::ConfigLayer;
+use auth::ProviderAuthStatus;
+use auth::parser::{AuthEntries, parse_auth_file};
+use config_core::{ConfigLayer, ProviderConfig};
+use opencode_provider_manager::{app, auth, config_core};
 
-use crate::tui_app::{AddProviderForm, App, EditProviderForm, KNOWN_SDKS, all_provider_ids, copy_source_list, BUILTIN_PROVIDERS};
+use crate::tui_app::{
+    AddProviderForm, App, BUILTIN_PROVIDERS, EditProviderForm, KNOWN_SDKS, all_provider_ids,
+    copy_source_list,
+};
 
 /// Helper for label styling based on focus state.
 fn label_style(focused: bool) -> Style {
@@ -33,22 +38,6 @@ mod colors {
     pub const DIM: Color = Color::DarkGray;
     #[allow(dead_code)]
     pub const HIGHLIGHT: Color = Color::White;
-}
-
-/// Auth status for a provider.
-enum AuthStatus {
-    Configured,
-    EnvVar(String),
-    Missing,
-}
-
-/// Check auth status for a provider (reuses auth crate logic).
-fn check_provider_auth(provider_id: &str) -> AuthStatus {
-    match provider_env_var(provider_id) {
-        Some(var) if std::env::var(var).is_ok() => AuthStatus::EnvVar(var.to_string()),
-        Some(_) => AuthStatus::Missing,
-        None => AuthStatus::Configured,
-    }
 }
 
 /// Render the provider list view.
@@ -74,6 +63,7 @@ pub fn render_provider_list(frame: &mut Frame, state: &AppState, app: &App) {
 
     // Provider list — show configured + built-in providers
     let all_ids = all_provider_ids(state);
+    let auth_entries = read_auth_entries(state).ok().flatten();
     let mut lines: Vec<Line> = Vec::new();
 
     for (i, (id, is_builtin)) in all_ids.iter().enumerate() {
@@ -86,15 +76,21 @@ pub fn render_provider_list(frame: &mut Frame, state: &AppState, app: &App) {
         let auth_span = if *is_builtin {
             Span::styled(" [built-in]", Style::default().fg(colors::DIM))
         } else {
-            match check_provider_auth(id) {
-                AuthStatus::Configured => {
+            match provider_auth_status(state, auth_entries.as_ref(), id, provider) {
+                ProviderAuthStatus::Configured { format_valid: true } => {
                     Span::styled(" [configured]", Style::default().fg(colors::SUCCESS))
                 }
-                AuthStatus::EnvVar(var) => Span::styled(
+                ProviderAuthStatus::Configured {
+                    format_valid: false,
+                } => Span::styled(" [configured?]", Style::default().fg(colors::WARNING)),
+                ProviderAuthStatus::OAuth => {
+                    Span::styled(" [oauth]", Style::default().fg(colors::SUCCESS))
+                }
+                ProviderAuthStatus::EnvVar { var_name: var } => Span::styled(
                     format!(" [env:{var}]"),
                     Style::default().fg(colors::WARNING),
                 ),
-                AuthStatus::Missing => {
+                ProviderAuthStatus::Missing => {
                     Span::styled(" [no key]", Style::default().fg(colors::ERROR))
                 }
             }
@@ -281,14 +277,73 @@ pub fn render_auth_status(frame: &mut Frame, state: &AppState, _app: &App) {
         .block(Block::bordered());
     frame.render_widget(title, title_area);
 
-    let auth_path = state.paths.auth.to_string_lossy().to_string();
-    let auth_exists = state.paths.auth.exists();
+    let auth_entries_result = read_auth_entries(state);
+    let auth_entries = auth_entries_result.as_ref().ok().and_then(|e| e.as_ref());
+    let mut lines = vec![
+        Line::from(format!("Auth file: {}", state.paths.auth.to_string_lossy())),
+        Line::from(format!("Exists: {}", state.paths.auth.exists())),
+    ];
 
-    let content = format!(
-        "Auth file: {auth_path}\nExists: {auth_exists}\n\nProvider authentication status:\n(Run 'opencode auth list' for full details)"
-    );
+    if let Err(e) = &auth_entries_result {
+        lines.push(Line::from(Span::styled(
+            format!("Read error: {e}"),
+            Style::default().fg(colors::ERROR),
+        )));
+    }
 
-    let auth_view = Paragraph::new(content)
+    lines.push(Line::from(""));
+    lines.push(Line::from("Provider authentication status:"));
+    lines.push(Line::from(""));
+
+    for (provider_id, is_builtin) in all_provider_ids(state) {
+        let provider = state.get_provider(&provider_id);
+        let (status_text, style) = if is_builtin {
+            (
+                "built-in template".to_string(),
+                Style::default().fg(colors::DIM),
+            )
+        } else {
+            match provider_auth_status(state, auth_entries, &provider_id, provider) {
+                ProviderAuthStatus::Configured { format_valid: true } => (
+                    "configured in auth.json".to_string(),
+                    Style::default().fg(colors::SUCCESS),
+                ),
+                ProviderAuthStatus::Configured {
+                    format_valid: false,
+                } => (
+                    "configured in auth.json (unrecognized key format)".to_string(),
+                    Style::default().fg(colors::WARNING),
+                ),
+                ProviderAuthStatus::OAuth => (
+                    "oauth token in auth.json".to_string(),
+                    Style::default().fg(colors::SUCCESS),
+                ),
+                ProviderAuthStatus::EnvVar { var_name } => (
+                    format!("environment variable: {var_name}"),
+                    Style::default().fg(colors::WARNING),
+                ),
+                ProviderAuthStatus::Missing => {
+                    ("missing".to_string(), Style::default().fg(colors::ERROR))
+                }
+            }
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {provider_id:<18} "),
+                Style::default().fg(colors::PRIMARY),
+            ),
+            Span::styled(status_text, style),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Secrets are never displayed. Use `/connect <provider-id>` in OpenCode to add credentials.",
+        Style::default().fg(colors::DIM),
+    )));
+
+    let auth_view = Paragraph::new(lines)
         .block(Block::bordered().title("opm - Auth Status"))
         .wrap(Wrap { trim: false });
     frame.render_widget(auth_view, main_area);
@@ -298,6 +353,48 @@ pub fn render_auth_status(frame: &mut Frame, state: &AppState, _app: &App) {
             .style(Style::default().fg(colors::DIM)),
         status_area,
     );
+}
+
+fn read_auth_entries(state: &AppState) -> Result<Option<AuthEntries>, auth::AuthError> {
+    if state.paths.auth.exists() {
+        parse_auth_file(&state.paths.auth).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+fn provider_auth_status(
+    _state: &AppState,
+    auth_entries: Option<&AuthEntries>,
+    provider_id: &str,
+    provider: Option<&ProviderConfig>,
+) -> ProviderAuthStatus {
+    if let Some(entries) = auth_entries {
+        if let Some(entry) = entries.get(provider_id) {
+            return ProviderAuthStatus::from_provider(provider_id, Some(entry));
+        }
+    }
+
+    if let Some(var_name) = provider_env_reference(provider) {
+        return ProviderAuthStatus::EnvVar { var_name };
+    }
+
+    ProviderAuthStatus::from_provider(provider_id, None)
+}
+
+fn provider_env_reference(provider: Option<&ProviderConfig>) -> Option<String> {
+    let options = provider?.options.as_ref()?;
+    for key in ["apiKey", "apikey", "key"] {
+        if let Some(var_name) = options
+            .get(key)
+            .and_then(|value| value.as_str())
+            .and_then(|value| value.strip_prefix("{env:"))
+            .and_then(|rest| rest.strip_suffix('}'))
+        {
+            return Some(var_name.to_string());
+        }
+    }
+    None
 }
 
 /// Render the model selector view.

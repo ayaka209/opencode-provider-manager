@@ -15,7 +15,7 @@
 //! - For scalars: project overrides global
 //! - Special handling for `provider` field: deep merge provider entries
 
-use crate::schema::OpenCodeConfig;
+use super::schema::OpenCodeConfig;
 
 /// Strategy for resolving merge conflicts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,7 +187,7 @@ pub trait Mergeable: Sized {
 }
 
 // Import schema types for Mergeable impls
-use crate::schema::*;
+use super::schema::*;
 
 impl Mergeable for ServerConfig {
     fn merge(self, other: Self) -> Self {
@@ -318,8 +318,8 @@ impl Mergeable for VariantConfig {
 
 #[cfg(test)]
 mod tests {
+    use super::super::schema::*;
     use super::*;
-    use crate::schema::*;
     use std::collections::HashMap;
 
     #[test]

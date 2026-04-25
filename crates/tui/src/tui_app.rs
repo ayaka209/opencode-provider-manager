@@ -1,6 +1,7 @@
 //! TUI application state and event loop.
 
 use anyhow::Result;
+use opencode_provider_manager::{app, config_core, discovery};
 
 use crate::event::AppEvent;
 use crate::ui;
@@ -76,7 +77,11 @@ pub const BUILTIN_PROVIDERS: &[(&str, &str, &str)] = &[
     ("deepseek", "DeepSeek", "openai"),
     ("together", "Together AI", "openai"),
     ("ollama", "Ollama", "ollama"),
-    ("aws-bedrock", "AWS Bedrock", "@aws-sdk/client-bedrock-runtime"),
+    (
+        "aws-bedrock",
+        "AWS Bedrock",
+        "@aws-sdk/client-bedrock-runtime",
+    ),
     ("azure-openai", "Azure OpenAI", "@azure/openai"),
 ];
 
@@ -237,7 +242,11 @@ pub struct EditProviderForm {
 
 impl EditProviderForm {
     pub fn field_labels() -> [&'static str; 3] {
-        ["Display Name", "SDK Package (↑↓ select, Enter confirm)", "Base URL"]
+        [
+            "Display Name",
+            "SDK Package (↑↓ select, Enter confirm)",
+            "Base URL",
+        ]
     }
 }
 
@@ -311,7 +320,10 @@ impl App {
 /// Async action to perform after key handling.
 enum AsyncAction {
     /// Fetch models from models.dev for a provider.
-    FetchModels(String),
+    FetchModels {
+        provider_id: String,
+        force_refresh: bool,
+    },
     /// No async action needed.
     None,
 }
@@ -341,12 +353,18 @@ pub async fn run(
                 if key.kind == crossterm::event::KeyEventKind::Press {
                     let action = handle_key_event(key, &mut app, &mut state);
                     match action {
-                        AsyncAction::FetchModels(provider_id) => {
+                        AsyncAction::FetchModels {
+                            provider_id,
+                            force_refresh,
+                        } => {
                             app.models_loading = true;
                             // Re-render to show loading state
                             terminal.draw(|frame| app.render(frame, &state))?;
                             let client = discovery::models_dev::ModelsDevClient::new();
-                            match client.fetch_provider_models(&provider_id).await {
+                            match client
+                                .fetch_provider_models_cached(&provider_id, force_refresh)
+                                .await
+                            {
                                 Ok(models) => {
                                     app.discovered_models = models;
                                 }
@@ -413,7 +431,8 @@ fn handle_key_event(
             }
             KeyCode::Enter => {
                 // If focused on SDK field and not yet confirmed, confirm selection
-                if form.focus == 1 && !form.sdk.custom_mode
+                if form.focus == 1
+                    && !form.sdk.custom_mode
                     && form.sdk.highlight == KNOWN_SDKS.len() - 1
                 {
                     // "Custom..." selected — enter custom text mode
@@ -469,7 +488,8 @@ fn handle_key_event(
                 }
             }
             KeyCode::Down | KeyCode::Char('j')
-                if form.focus == 1 && !form.sdk.custom_mode
+                if form.focus == 1
+                    && !form.sdk.custom_mode
                     && form.sdk.highlight < KNOWN_SDKS.len() - 1 =>
             {
                 form.sdk.highlight += 1;
@@ -520,19 +540,19 @@ fn handle_key_event(
     if let AppMode::AddProvider(ref mut form) = app.mode {
         // Handle copy-from list mode first
         if form.show_copy_list {
-        match key.code {
-            KeyCode::Esc => {
-                app.mode = AppMode::ProviderList;
-            }
-            KeyCode::Char('c') => {
-                // Toggle copy-from list
-                if !form.show_copy_list && !copy_source_list(state).is_empty() {
-                    form.show_copy_list = true;
-                    form.copy_highlight = 0;
-                } else {
-                    form.show_copy_list = false;
+            match key.code {
+                KeyCode::Esc => {
+                    app.mode = AppMode::ProviderList;
                 }
-            }
+                KeyCode::Char('c') => {
+                    // Toggle copy-from list
+                    if !form.show_copy_list && !copy_source_list(state).is_empty() {
+                        form.show_copy_list = true;
+                        form.copy_highlight = 0;
+                    } else {
+                        form.show_copy_list = false;
+                    }
+                }
                 KeyCode::Up | KeyCode::Char('k') if form.copy_highlight > 0 => {
                     form.copy_highlight -= 1;
                 }
@@ -578,7 +598,11 @@ fn handle_key_event(
             KeyCode::Esc => {
                 app.mode = AppMode::ProviderList;
             }
-            KeyCode::Char('c') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+            KeyCode::Char('c')
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
                 // Toggle copy-from list (Ctrl+C to avoid conflict with text input)
                 if !form.show_copy_list && !copy_source_list(state).is_empty() {
                     form.show_copy_list = true;
@@ -600,14 +624,16 @@ fn handle_key_event(
                 form.sdk.highlight -= 1;
             }
             KeyCode::Down | KeyCode::Char('j')
-                if form.focus == 2 && !form.sdk.custom_mode
+                if form.focus == 2
+                    && !form.sdk.custom_mode
                     && form.sdk.highlight < KNOWN_SDKS.len() - 1 =>
             {
                 form.sdk.highlight += 1;
             }
             KeyCode::Enter => {
                 // If focused on SDK field and "Custom..." is highlighted, enter custom mode
-                if form.focus == 2 && !form.sdk.custom_mode
+                if form.focus == 2
+                    && !form.sdk.custom_mode
                     && form.sdk.highlight == KNOWN_SDKS.len() - 1
                 {
                     form.sdk.custom_mode = true;
@@ -652,6 +678,7 @@ fn handle_key_event(
                     },
                     models: None,
                     disabled: None,
+                    extra: Default::default(),
                 };
 
                 if let Err(e) = state.add_provider(id, provider_config, state.edit_layer) {
@@ -716,7 +743,10 @@ fn handle_key_event(
             let provider_ids = state.provider_ids();
             if let Some(provider_id) = provider_ids.get(app.selected_index) {
                 app.selected_provider = Some(provider_id.clone());
-                async_action = AsyncAction::FetchModels(provider_id.clone());
+                async_action = AsyncAction::FetchModels {
+                    provider_id: provider_id.clone(),
+                    force_refresh: false,
+                };
             }
         }
         KeyCode::Char('c') => app.on_event(AppEvent::SwitchMode(AppMode::ConfigDetail)),
@@ -732,7 +762,10 @@ fn handle_key_event(
                 // currently selected provider.
                 if let Some(ref provider_id) = app.selected_provider {
                     app.discovered_models.clear();
-                    async_action = AsyncAction::FetchModels(provider_id.clone());
+                    async_action = AsyncAction::FetchModels {
+                        provider_id: provider_id.clone(),
+                        force_refresh: true,
+                    };
                 }
             } else if state.dirty {
                 // Refresh configs from disk — check for unsaved changes first
@@ -770,8 +803,7 @@ fn handle_key_event(
                             if let Err(e) =
                                 state.add_provider(provider_id.clone(), pc, state.edit_layer)
                             {
-                                app.error_message =
-                                    Some(format!("Failed to add provider: {e}"));
+                                app.error_message = Some(format!("Failed to add provider: {e}"));
                                 return async_action;
                             }
                         }
@@ -845,6 +877,7 @@ mod tests {
                     m
                 }),
                 disabled: None,
+                extra: Default::default(),
             },
         );
         providers.insert(
@@ -862,6 +895,7 @@ mod tests {
                 }),
                 models: None,
                 disabled: None,
+                extra: Default::default(),
             },
         );
         state.merged_config.provider = Some(providers);
@@ -1320,7 +1354,13 @@ mod tests {
         let action = handle_key_event(key(KeyCode::Char('m')), &mut app, &mut state);
         assert_eq!(app.mode, AppMode::ModelSelector);
         assert!(app.selected_provider.is_some());
-        assert!(matches!(action, AsyncAction::FetchModels(_)));
+        assert!(matches!(
+            action,
+            AsyncAction::FetchModels {
+                force_refresh: false,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1340,7 +1380,13 @@ mod tests {
         // Press r to refresh
         let action = handle_key_event(key(KeyCode::Char('r')), &mut app, &mut state);
         assert!(app.discovered_models.is_empty());
-        assert!(matches!(action, AsyncAction::FetchModels(_)));
+        assert!(matches!(
+            action,
+            AsyncAction::FetchModels {
+                force_refresh: true,
+                ..
+            }
+        ));
     }
 
     // --- Save ---
@@ -1481,7 +1527,11 @@ mod tests {
         let (mut app, mut state) = test_app_with_providers();
         handle_key_event(key(KeyCode::Char('n')), &mut app, &mut state);
         // Press Ctrl+C to enter copy mode
-        handle_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL), &mut app, &mut state);
+        handle_key_event(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            &mut app,
+            &mut state,
+        );
         if let AppMode::AddProvider(ref form) = app.mode {
             assert!(form.show_copy_list);
         }
@@ -1497,7 +1547,11 @@ mod tests {
         let (mut app, mut state) = test_app_with_providers();
         handle_key_event(key(KeyCode::Char('n')), &mut app, &mut state);
         // Enter copy mode with Ctrl+C
-        handle_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL), &mut app, &mut state);
+        handle_key_event(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            &mut app,
+            &mut state,
+        );
         // Press Enter to select first provider in copy list
         handle_key_event(key(KeyCode::Enter), &mut app, &mut state);
         if let AppMode::AddProvider(ref form) = app.mode {

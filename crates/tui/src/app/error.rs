@@ -3,13 +3,13 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum AppError {
     #[error("Config error: {0}")]
-    Config(#[from] config_core::ConfigError),
+    Config(#[from] crate::config_core::ConfigError),
 
     #[error("Discovery error: {0}")]
-    Discovery(#[from] discovery::DiscoveryError),
+    Discovery(#[from] crate::discovery::DiscoveryError),
 
     #[error("Auth error: {0}")]
-    Auth(#[from] auth::AuthError),
+    Auth(#[from] crate::auth::AuthError),
 
     #[error("State error: {0}")]
     State(String),
