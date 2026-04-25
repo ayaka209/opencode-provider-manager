@@ -236,7 +236,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "app"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "auth",
@@ -504,7 +504,7 @@ dependencies = [
 
 [[package]]
 name = "auth"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "config-core",
@@ -833,7 +833,7 @@ dependencies = [
 
 [[package]]
 name = "config-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "dirs",
@@ -1041,7 +1041,7 @@ dependencies = [
 
 [[package]]
 name = "discovery"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2800,7 +2800,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "opencode-provider-manager"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2826,7 +2826,7 @@ dependencies = [
 
 [[package]]
 name = "opencode-provider-manager-gui"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "eframe",

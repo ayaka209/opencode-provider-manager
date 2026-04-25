@@ -12,7 +12,7 @@ name = "opm-gui"
 path = "src/main.rs"
 
 [dependencies]
-"opencode-provider-manager" = { path = "../tui", version = "0.1.1" }
+"opencode-provider-manager" = { path = "../tui", version = "0.1.2" }
 egui = { workspace = true }
 eframe = { workspace = true }
 anyhow = { workspace = true }

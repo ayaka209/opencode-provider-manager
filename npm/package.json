@@ -1,6 +1,6 @@
 {
   "name": "opencode-provider-manager",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "OpenCode Provider Manager — manage opencode.json provider configs via TUI or CLI",
   "bin": {
     "opm": "./run.js"

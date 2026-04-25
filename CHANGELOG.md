@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-04-25
+
+### Added
+
+- Standalone GUI binary crate published as `opencode-provider-manager-gui`.
+- Rich import support for JSON/JSONC, TOML, YAML, models.dev directories, and GitHub tree URLs with import provenance metadata.
+- Release automation for npm and crates.io, including two-crate crates publishing order.
+
+### Changed
+
+- Public crates.io packaging is now limited to `opencode-provider-manager` and `opencode-provider-manager-gui`.
+- Shared app/config/auth/discovery logic is embedded in the public crate so internal workspace crates stay unpublished.
+
 ## [0.1.1] - 2026-04-19
 
 ### Added
