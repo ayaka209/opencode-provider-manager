@@ -99,7 +99,9 @@ jobs:
           TAG_VERSION="${{ steps.release.outputs.tag }}"
           TAG_VERSION="${TAG_VERSION#v}"
           for attempt in $(seq 1 30); do
-            if curl --fail --silent --show-error https://crates.io/api/v1/crates/opencode-provider-manager | grep -q "\"newest_version\":\"${TAG_VERSION}\""; then
+            if curl --fail --silent --show-error \
+              --header "User-Agent: opencode-provider-manager-release-workflow" \
+              https://crates.io/api/v1/crates/opencode-provider-manager | grep -q "\"newest_version\":\"${TAG_VERSION}\""; then
               echo "opencode-provider-manager ${TAG_VERSION} is visible in crates.io API"
               exit 0
             fi
