@@ -52,6 +52,11 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Authenticate with crates.io
+        if: steps.release.outputs.dry_run != 'true'
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
       - name: Verify workspace version matches tag
         shell: bash
         run: |
@@ -79,6 +84,8 @@ jobs:
 
       - name: Publish main crate
         if: steps.release.outputs.dry_run != 'true'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -102,6 +109,8 @@ jobs:
 
       - name: Publish GUI crate
         if: steps.release.outputs.dry_run != 'true'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         shell: bash
         run: |
           set -euo pipefail
