@@ -55,62 +55,23 @@ pub enum AppMode {
 /// Known SDK packages for provider configuration.
 /// The last entry "Custom" signals manual text entry mode.
 pub const KNOWN_SDKS: &[&str] = &[
-    "openai",
-    "@anthropic-ai/sdk",
-    "@google/generative-ai",
-    "@mistralai/sdk",
-    "@aws-sdk/client-bedrock-runtime",
-    "@azure/openai",
-    "ollama",
+    "@ai-sdk/openai",
+    "@ai-sdk/openai-compatible",
+    "@ai-sdk/anthropic",
+    "@ai-sdk/google",
+    "@ai-sdk/groq",
+    "@ai-sdk/mistral",
+    "@ai-sdk/amazon-bedrock",
+    "@ai-sdk/azure",
     "Custom...",
 ];
 
-/// Built-in providers that OpenCode supports out of the box.
-/// (id, display_name, npm_package)
-pub const BUILTIN_PROVIDERS: &[(&str, &str, &str)] = &[
-    ("openai", "OpenAI", "openai"),
-    ("anthropic", "Anthropic", "@anthropic-ai/sdk"),
-    ("google", "Google AI", "@google/generative-ai"),
-    ("groq", "Groq", "openai"),
-    ("mistral", "Mistral AI", "@mistralai/sdk"),
-    ("xai", "xAI (Grok)", "openai"),
-    ("deepseek", "DeepSeek", "openai"),
-    ("together", "Together AI", "openai"),
-    ("ollama", "Ollama", "ollama"),
-    (
-        "aws-bedrock",
-        "AWS Bedrock",
-        "@aws-sdk/client-bedrock-runtime",
-    ),
-    ("azure-openai", "Azure OpenAI", "@azure/openai"),
-];
-
-/// Return all provider IDs (configured + built-in not yet configured).
-/// Returns (id, is_builtin) pairs.
-pub fn all_provider_ids(state: &AppState) -> Vec<(String, bool)> {
-    let configured = state.provider_ids();
-    let mut result: Vec<(String, bool)> = configured.into_iter().map(|id| (id, false)).collect();
-    for (id, _, _) in BUILTIN_PROVIDERS {
-        if !result.iter().any(|(pid, _)| pid == id) {
-            result.push((id.to_string(), true));
-        }
-    }
-    result
+/// Return all configured provider IDs.
+pub fn all_provider_ids(state: &AppState) -> Vec<String> {
+    state.provider_ids()
 }
 
-/// Build a minimal ProviderConfig for a built-in provider.
-pub fn builtin_provider_config(id: &str) -> Option<config_core::ProviderConfig> {
-    BUILTIN_PROVIDERS
-        .iter()
-        .find(|(bid, _, _)| *bid == id)
-        .map(|(_, name, npm)| config_core::ProviderConfig {
-            name: Some(name.to_string()),
-            npm: Some(npm.to_string()),
-            ..Default::default()
-        })
-}
-
-/// Build the list of providers available for copying (configured + built-in).
+/// Build the list of providers available for copying (configured only).
 /// Returns (id, display_name) pairs.
 pub fn copy_source_list(state: &AppState) -> Vec<(String, String)> {
     let configured = state.provider_ids();
@@ -123,13 +84,6 @@ pub fn copy_source_list(state: &AppState) -> Vec<(String, String)> {
             .and_then(|p| p.name.clone())
             .unwrap_or_else(|| id.clone());
         result.push((id.clone(), name));
-    }
-
-    // Add built-in providers not yet configured
-    for (id, display_name, _) in BUILTIN_PROVIDERS {
-        if !configured.iter().any(|cid| cid == id) {
-            result.push((id.to_string(), display_name.to_string()));
-        }
     }
 
     result
@@ -565,12 +519,8 @@ fn handle_key_event(
                 KeyCode::Enter => {
                     let sources = copy_source_list(state);
                     if let Some((id, _name)) = sources.get(form.copy_highlight) {
-                        // Get provider config (either configured or built-in)
-                        let pc = state
-                            .get_provider(id)
-                            .cloned()
-                            .or_else(|| builtin_provider_config(id));
-                        if let Some(provider) = pc {
+                        // Get provider config from configured providers
+                        if let Some(provider) = state.get_provider(id).cloned() {
                             form.name = provider.name.unwrap_or_default();
                             let npm_val = provider.npm.unwrap_or_default();
                             form.sdk = SdkSelectState::from_value(&npm_val);
@@ -790,24 +740,21 @@ fn handle_key_event(
             app.on_event(AppEvent::SelectIndex(app.selected_index - 1));
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            app.on_event(AppEvent::SelectIndex(app.selected_index.saturating_add(1)));
+            // Clamp to actual list length when in ProviderList mode
+            let max = if app.mode == AppMode::ProviderList {
+                all_provider_ids(state).len().saturating_sub(1)
+            } else {
+                usize::MAX
+            };
+            if app.selected_index < max {
+                app.on_event(AppEvent::SelectIndex(app.selected_index + 1));
+            }
         }
         KeyCode::Enter => {
             // In provider list, open edit view for the selected provider
             if app.mode == AppMode::ProviderList {
                 let all_ids = all_provider_ids(state);
-                if let Some((provider_id, is_builtin)) = all_ids.get(app.selected_index) {
-                    if *is_builtin {
-                        // Auto-add built-in provider with defaults and enter edit mode
-                        if let Some(pc) = builtin_provider_config(provider_id) {
-                            if let Err(e) =
-                                state.add_provider(provider_id.clone(), pc, state.edit_layer)
-                            {
-                                app.error_message = Some(format!("Failed to add provider: {e}"));
-                                return async_action;
-                            }
-                        }
-                    }
+                if let Some(provider_id) = all_ids.get(app.selected_index) {
                     let provider = state.get_provider(provider_id);
                     let npm_val = provider.and_then(|p| p.npm.clone()).unwrap_or_default();
                     let form = EditProviderForm {
@@ -1190,9 +1137,9 @@ mod tests {
         if let AppMode::EditProvider(ref form) = app.mode {
             assert_eq!(form.provider_id, "openai");
             assert_eq!(form.name, "OpenAI");
-            // "openai" is a known SDK, so it should be selected (not custom mode)
-            assert_eq!(form.sdk.highlight, 0); // index of "openai" in KNOWN_SDKS
-            assert!(!form.sdk.custom_mode);
+            // "openai" is not in KNOWN_SDKS anymore, so custom mode
+            assert!(form.sdk.custom_mode);
+            assert_eq!(form.sdk.custom_text, "openai");
             assert_eq!(form.base_url, "");
         }
     }
@@ -1417,13 +1364,13 @@ mod tests {
         for c in "Mistral AI".chars() {
             handle_key_event(key(KeyCode::Char(c)), &mut app, &mut state);
         }
-        // Tab → sdk (selection list — navigate to @mistralai/sdk at index 3)
+        // Tab → sdk (selection list — navigate to @ai-sdk/mistral at index 5)
         handle_key_event(key(KeyCode::Tab), &mut app, &mut state);
-        for _ in 0..3 {
+        for _ in 0..5 {
             handle_key_event(key(KeyCode::Down), &mut app, &mut state);
         }
         if let AppMode::AddProvider(ref form) = app.mode {
-            assert_eq!(form.sdk.highlight, 3); // @mistralai/sdk
+            assert_eq!(form.sdk.highlight, 5); // @ai-sdk/mistral
         }
         // Tab → base_url
         handle_key_event(key(KeyCode::Tab), &mut app, &mut state);
@@ -1437,7 +1384,7 @@ mod tests {
         assert_eq!(app.mode, AppMode::ProviderList);
         let provider = state.get_provider("mistral").unwrap();
         assert_eq!(provider.name.as_deref(), Some("Mistral AI"));
-        assert_eq!(provider.npm.as_deref(), Some("@mistralai/sdk"));
+        assert_eq!(provider.npm.as_deref(), Some("@ai-sdk/mistral"));
         let base_url = provider
             .options
             .as_ref()
@@ -1464,46 +1411,17 @@ mod tests {
         }
     }
 
-    // --- Built-in providers ---
+    // --- Provider list ---
 
     #[test]
-    fn test_all_provider_ids_includes_builtin() {
+    fn test_all_provider_ids_returns_configured() {
         let (_app, state) = test_app_with_providers();
         let all = all_provider_ids(&state);
-        // Should have openai + anthropic (configured) + remaining builtins
-        let configured_count = state.provider_ids().len();
-        let builtin_new = BUILTIN_PROVIDERS
-            .iter()
-            .filter(|(id, _, _)| !state.provider_ids().contains(&id.to_string()))
-            .count();
-        assert_eq!(all.len(), configured_count + builtin_new);
-        // Configured ones should be marked as non-builtin
-        assert!(all.iter().any(|(_, b)| !b));
-        // Built-in ones should be marked as builtin
-        assert!(all.iter().any(|(_, b)| *b));
-    }
-
-    #[test]
-    fn test_builtin_provider_config() {
-        let pc = builtin_provider_config("openai").unwrap();
-        assert_eq!(pc.name.as_deref(), Some("OpenAI"));
-        assert_eq!(pc.npm.as_deref(), Some("openai"));
-        assert!(builtin_provider_config("nonexistent").is_none());
-    }
-
-    #[test]
-    fn test_enter_on_builtin_auto_adds() {
-        let (mut app, mut state) = test_app_with_providers();
-        // Find a built-in provider that's not configured
-        let all = all_provider_ids(&state);
-        let builtin_idx = all.iter().position(|(_, b)| *b).unwrap();
-        app.selected_index = builtin_idx;
-        handle_key_event(key(KeyCode::Enter), &mut app, &mut state);
-        // Should be in edit mode (auto-added)
-        assert!(matches!(app.mode, AppMode::EditProvider(_)));
-        if let AppMode::EditProvider(ref form) = app.mode {
-            // Should have been auto-added
-            assert!(state.get_provider(&form.provider_id).is_some());
+        // Should only have configured providers (openai + anthropic)
+        assert_eq!(all.len(), state.provider_ids().len());
+        // All configured providers should be present
+        for id in state.provider_ids() {
+            assert!(all.contains(&id));
         }
     }
 
@@ -1511,15 +1429,12 @@ mod tests {
     fn test_copy_source_list() {
         let (_app, state) = test_app_with_providers();
         let sources = copy_source_list(&state);
-        // Should have configured providers + built-in not yet configured
-        assert!(sources.len() >= state.provider_ids().len());
-        // Configured providers should be first
-        let configured = state.provider_ids();
-        for id in &configured {
-            assert!(sources.iter().any(|(sid, _)| sid == id));
+        // Should have exactly the configured providers
+        assert_eq!(sources.len(), state.provider_ids().len());
+        // Configured providers should be there
+        for id in state.provider_ids() {
+            assert!(sources.iter().any(|(sid, _)| *sid == id));
         }
-        // Built-in providers not yet configured should also be there
-        assert!(sources.iter().any(|(sid, _)| sid == "groq")); // not in test config
     }
 
     #[test]

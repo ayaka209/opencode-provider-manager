@@ -13,7 +13,7 @@ use config_core::{ConfigLayer, ProviderConfig};
 use opencode_provider_manager::{app, auth, config_core};
 
 use crate::tui_app::{
-    AddProviderForm, App, BUILTIN_PROVIDERS, EditProviderForm, KNOWN_SDKS, all_provider_ids,
+    AddProviderForm, App, EditProviderForm, KNOWN_SDKS, all_provider_ids,
     copy_source_list,
 };
 
@@ -40,6 +40,25 @@ mod colors {
     pub const HIGHLIGHT: Color = Color::White;
 }
 
+/// Calculate scroll offset so the selected item stays visible in a list.
+/// Returns (row_offset, 0) for use with `.scroll()`.
+fn scroll_offset_for_list(selected: usize, total_items: usize, visible_height: u16) -> (u16, u16) {
+    if visible_height == 0 || total_items == 0 {
+        return (0, 0);
+    }
+    // Account for border (2 lines) in the widget area
+    let usable = visible_height.saturating_sub(2) as usize;
+    if usable == 0 {
+        return (0, 0);
+    }
+    // Keep selected item within the visible window
+    if selected >= usable {
+        (selected.saturating_sub(usable.saturating_sub(1)) as u16, 0)
+    } else {
+        (0, 0)
+    }
+}
+
 /// Render the provider list view.
 pub fn render_provider_list(frame: &mut Frame, state: &AppState, app: &App) {
     let size = frame.area();
@@ -61,66 +80,48 @@ pub fn render_provider_list(frame: &mut Frame, state: &AppState, app: &App) {
         .block(Block::bordered().title("opm"));
     frame.render_widget(title, title_area);
 
-    // Provider list — show configured + built-in providers
+    // Provider list — show configured providers
     let all_ids = all_provider_ids(state);
     let auth_entries = read_auth_entries(state).ok().flatten();
     let mut lines: Vec<Line> = Vec::new();
 
-    for (i, (id, is_builtin)) in all_ids.iter().enumerate() {
+    for (i, id) in all_ids.iter().enumerate() {
         let provider = state.get_provider(id);
         let model_count = provider
             .and_then(|p| p.models.as_ref())
             .map(|m| m.len())
             .unwrap_or(0);
 
-        let auth_span = if *is_builtin {
-            Span::styled(" [built-in]", Style::default().fg(colors::DIM))
-        } else {
-            match provider_auth_status(state, auth_entries.as_ref(), id, provider) {
-                ProviderAuthStatus::Configured { format_valid: true } => {
-                    Span::styled(" [configured]", Style::default().fg(colors::SUCCESS))
-                }
-                ProviderAuthStatus::Configured {
-                    format_valid: false,
-                } => Span::styled(" [configured?]", Style::default().fg(colors::WARNING)),
-                ProviderAuthStatus::OAuth => {
-                    Span::styled(" [oauth]", Style::default().fg(colors::SUCCESS))
-                }
-                ProviderAuthStatus::EnvVar { var_name: var } => Span::styled(
-                    format!(" [env:{var}]"),
-                    Style::default().fg(colors::WARNING),
-                ),
-                ProviderAuthStatus::Missing => {
-                    Span::styled(" [no key]", Style::default().fg(colors::ERROR))
-                }
+        let auth_span = match provider_auth_status(state, auth_entries.as_ref(), id, provider) {
+            ProviderAuthStatus::Configured { format_valid: true } => {
+                Span::styled(" [configured]", Style::default().fg(colors::SUCCESS))
+            }
+            ProviderAuthStatus::Configured {
+                format_valid: false,
+            } => Span::styled(" [configured?]", Style::default().fg(colors::WARNING)),
+            ProviderAuthStatus::OAuth => {
+                Span::styled(" [oauth]", Style::default().fg(colors::SUCCESS))
+            }
+            ProviderAuthStatus::EnvVar { var_name: var } => Span::styled(
+                format!(" [env:{var}]"),
+                Style::default().fg(colors::WARNING),
+            ),
+            ProviderAuthStatus::Missing => {
+                Span::styled(" [no key]", Style::default().fg(colors::ERROR))
             }
         };
 
-        let name = if *is_builtin {
-            BUILTIN_PROVIDERS
-                .iter()
-                .find(|(bid, _, _)| bid == id)
-                .map(|(_, n, _)| n.to_string())
-                .unwrap_or_else(|| id.clone())
-        } else {
-            provider
-                .and_then(|p| p.name.clone())
-                .unwrap_or_else(|| id.clone())
-        };
+        let name = provider
+            .and_then(|p| p.name.clone())
+            .unwrap_or_else(|| id.clone());
 
         let style = if i == app.selected_index {
             Style::default().add_modifier(Modifier::REVERSED)
-        } else if *is_builtin {
-            Style::default().fg(colors::DIM)
         } else {
             Style::default()
         };
 
-        let count_str = if *is_builtin {
-            "available".to_string()
-        } else {
-            format!("{} models", model_count)
-        };
+        let count_str = format!("{} models", model_count);
 
         lines.push(Line::from(vec![
             Span::styled(format!("  {:2} ", i + 1), Style::default().fg(colors::DIM)),
@@ -147,7 +148,8 @@ pub fn render_provider_list(frame: &mut Frame, state: &AppState, app: &App) {
 
     let provider_view = Paragraph::new(lines)
         .block(Block::bordered().title("Providers"))
-        .wrap(Wrap { trim: false });
+        .wrap(Wrap { trim: false })
+        .scroll(scroll_offset_for_list(app.selected_index, all_ids.len(), main_area.height));
     frame.render_widget(provider_view, main_area);
 
     // Status bar
@@ -295,36 +297,29 @@ pub fn render_auth_status(frame: &mut Frame, state: &AppState, _app: &App) {
     lines.push(Line::from("Provider authentication status:"));
     lines.push(Line::from(""));
 
-    for (provider_id, is_builtin) in all_provider_ids(state) {
+    for provider_id in all_provider_ids(state) {
         let provider = state.get_provider(&provider_id);
-        let (status_text, style) = if is_builtin {
-            (
-                "built-in template".to_string(),
-                Style::default().fg(colors::DIM),
-            )
-        } else {
-            match provider_auth_status(state, auth_entries, &provider_id, provider) {
-                ProviderAuthStatus::Configured { format_valid: true } => (
-                    "configured in auth.json".to_string(),
-                    Style::default().fg(colors::SUCCESS),
-                ),
-                ProviderAuthStatus::Configured {
-                    format_valid: false,
-                } => (
-                    "configured in auth.json (unrecognized key format)".to_string(),
-                    Style::default().fg(colors::WARNING),
-                ),
-                ProviderAuthStatus::OAuth => (
-                    "oauth token in auth.json".to_string(),
-                    Style::default().fg(colors::SUCCESS),
-                ),
-                ProviderAuthStatus::EnvVar { var_name } => (
-                    format!("environment variable: {var_name}"),
-                    Style::default().fg(colors::WARNING),
-                ),
-                ProviderAuthStatus::Missing => {
-                    ("missing".to_string(), Style::default().fg(colors::ERROR))
-                }
+        let (status_text, style) = match provider_auth_status(state, auth_entries, &provider_id, provider) {
+            ProviderAuthStatus::Configured { format_valid: true } => (
+                "configured in auth.json".to_string(),
+                Style::default().fg(colors::SUCCESS),
+            ),
+            ProviderAuthStatus::Configured {
+                format_valid: false,
+            } => (
+                "configured in auth.json (unrecognized key format)".to_string(),
+                Style::default().fg(colors::WARNING),
+            ),
+            ProviderAuthStatus::OAuth => (
+                "oauth token in auth.json".to_string(),
+                Style::default().fg(colors::SUCCESS),
+            ),
+            ProviderAuthStatus::EnvVar { var_name } => (
+                format!("environment variable: {var_name}"),
+                Style::default().fg(colors::WARNING),
+            ),
+            ProviderAuthStatus::Missing => {
+                ("missing".to_string(), Style::default().fg(colors::ERROR))
             }
         };
 
