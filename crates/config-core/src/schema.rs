@@ -314,8 +314,10 @@ pub enum AgentMode {
 pub struct McpConfig {
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub mcp_type: Option<String>,
+    /// Command to run — can be a single string (with separate `args`)
+    /// or an array of strings (command + args combined).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub command: Option<String>,
+    pub command: Option<CommandField>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub args: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -324,6 +326,18 @@ pub struct McpConfig {
     pub env: Option<HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+}
+
+/// MCP command field — accepts either a string or an array of strings.
+///
+/// OpenCode's config format supports both:
+/// - `"command": "npx"` with `"args": ["-y", "some-pkg"]`
+/// - `"command": ["npx", "-y", "some-pkg"]` (shorthand without separate args)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum CommandField {
+    String(String),
+    Array(Vec<String>),
 }
 
 /// Permission configuration.
