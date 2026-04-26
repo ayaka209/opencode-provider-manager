@@ -50,6 +50,8 @@ pub enum AppMode {
     AddProvider(AddProviderForm),
     /// Edit provider view (display and edit fields).
     EditProvider(EditProviderForm),
+    /// Import config wizard (URL/path/snippet).
+    Import(ImportForm),
 }
 
 /// Known SDK packages for provider configuration.
@@ -204,6 +206,45 @@ impl EditProviderForm {
     }
 }
 
+/// Form state for the import wizard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportForm {
+    /// Which field is focused (0=source, 1=layer, 2=mode, 3=provider_id).
+    pub focus: usize,
+    /// Source URL, file path, or inline snippet.
+    pub source: String,
+    /// Target layer index: 0=project, 1=global, 2=custom.
+    pub layer_index: usize,
+    /// Merge mode: 0=merge, 1=replace.
+    pub mode_index: usize,
+    /// Optional provider ID hint.
+    pub provider_id: String,
+    /// Result message after import attempt.
+    pub result_message: Option<String>,
+}
+
+impl ImportForm {
+    pub fn new() -> Self {
+        Self {
+            focus: 0,
+            source: String::new(),
+            layer_index: 0,
+            mode_index: 0,
+            provider_id: String::new(),
+            result_message: None,
+        }
+    }
+
+    pub fn field_labels() -> [&'static str; 4] {
+        [
+            "Source (URL/path/snippet)",
+            "Target Layer (↑↓)",
+            "Import Mode (↑↓)",
+            "Provider ID (optional)",
+        ]
+    }
+}
+
 impl App {
     /// Create a new app instance.
     pub fn new() -> Self {
@@ -266,6 +307,9 @@ impl App {
             }
             AppMode::EditProvider(form) => {
                 ui::render_edit_provider(frame, state, form);
+            }
+            AppMode::Import(form) => {
+                ui::render_import(frame, form);
             }
         }
     }
@@ -466,6 +510,104 @@ fn handle_key_event(
                 2 => form.base_url.push(c),
                 _ => {}
             },
+            _ => {}
+        }
+        return AsyncAction::None;
+    }
+
+    // Handle import mode separately
+    if let AppMode::Import(ref mut form) = app.mode {
+        match key.code {
+            KeyCode::Esc => {
+                app.mode = AppMode::ProviderList;
+            }
+            KeyCode::Tab => {
+                form.focus = (form.focus + 1) % ImportForm::field_labels().len();
+            }
+            KeyCode::BackTab => {
+                form.focus = (form.focus + ImportForm::field_labels().len() - 1)
+                    % ImportForm::field_labels().len();
+            }
+            KeyCode::Up => match form.focus {
+                1 if form.layer_index > 0 => {
+                    form.layer_index -= 1;
+                }
+                2 if form.mode_index > 0 => {
+                    form.mode_index -= 1;
+                }
+                _ => {}
+            },
+            KeyCode::Down => match form.focus {
+                1 if form.layer_index < 2 => {
+                    form.layer_index += 1;
+                }
+                2 if form.mode_index < 1 => {
+                    form.mode_index += 1;
+                }
+                _ => {}
+            },
+            KeyCode::Backspace => match form.focus {
+                0 => {
+                    form.source.pop();
+                }
+                3 => {
+                    form.provider_id.pop();
+                }
+                _ => {}
+            },
+            KeyCode::Char(c) => match form.focus {
+                0 => form.source.push(c),
+                3 => form.provider_id.push(c),
+                _ => {}
+            },
+            KeyCode::Enter => {
+                let source = form.source.trim().to_string();
+                if source.is_empty() {
+                    form.result_message =
+                        Some("Source cannot be empty".to_string());
+                } else {
+                    let layer = match form.layer_index {
+                        0 => config_core::ConfigLayer::Project,
+                        1 => config_core::ConfigLayer::Global,
+                        2 => config_core::ConfigLayer::Custom,
+                        _ => config_core::ConfigLayer::Project,
+                    };
+                    let mode = if form.mode_index == 0 {
+                        app::import::ImportMergeMode::Merge
+                    } else {
+                        app::import::ImportMergeMode::Replace
+                    };
+                    let provider_hint = if form.provider_id.trim().is_empty() {
+                        None
+                    } else {
+                        Some(form.provider_id.trim().to_string())
+                    };
+                    match app::import::import_source(
+                        state,
+                        &source,
+                        provider_hint.as_deref(),
+                        layer,
+                        mode,
+                    ) {
+                        Ok(summary) => {
+                            form.result_message = Some(format!(
+                                "OK: {} provider(s), {} model(s): {}",
+                                summary.provider_count,
+                                summary.model_count,
+                                if summary.provider_ids.is_empty() {
+                                    "(none)".to_string()
+                                } else {
+                                    summary.provider_ids.join(", ")
+                                }
+                            ));
+                        }
+                        Err(e) => {
+                            form.result_message =
+                                Some(format!("Import failed: {e:#}"));
+                        }
+                    }
+                }
+            }
             _ => {}
         }
         return AsyncAction::None;
@@ -735,6 +877,10 @@ fn handle_key_event(
         KeyCode::Char('n') if app.mode == AppMode::ProviderList => {
             // Add new provider
             app.mode = AppMode::AddProvider(AddProviderForm::new());
+        }
+        KeyCode::Char('i') if app.mode == AppMode::ProviderList => {
+            // Import config
+            app.mode = AppMode::Import(ImportForm::new());
         }
         KeyCode::Up | KeyCode::Char('k') if app.selected_index > 0 => {
             app.on_event(AppEvent::SelectIndex(app.selected_index - 1));
@@ -1473,6 +1619,104 @@ mod tests {
             assert!(!form.show_copy_list);
             // Should have pre-filled fields (auto ID since empty)
             assert!(!form.id.is_empty() || !form.name.is_empty());
+        }
+    }
+
+    // --- Import ---
+
+    #[test]
+    fn test_i_opens_import() {
+        let (mut app, mut state) = test_app_with_providers();
+        app.mode = AppMode::ProviderList;
+        handle_key_event(key(KeyCode::Char('i')), &mut app, &mut state);
+        assert!(matches!(app.mode, AppMode::Import(_)));
+    }
+
+    #[test]
+    fn test_import_esc_cancels() {
+        let (mut app, mut state) = test_app_with_providers();
+        app.mode = AppMode::Import(ImportForm::new());
+        handle_key_event(key(KeyCode::Esc), &mut app, &mut state);
+        assert_eq!(app.mode, AppMode::ProviderList);
+    }
+
+    #[test]
+    fn test_import_tab_cycles() {
+        let (mut app, mut state) = test_app_with_providers();
+        app.mode = AppMode::Import(ImportForm::new());
+        handle_key_event(key(KeyCode::Tab), &mut app, &mut state);
+        if let AppMode::Import(ref form) = app.mode {
+            assert_eq!(form.focus, 1);
+        }
+    }
+
+    #[test]
+    fn test_import_shift_tab_goes_back() {
+        let (mut app, mut state) = test_app_with_providers();
+        app.mode = AppMode::Import(ImportForm::new());
+        handle_key_event(key(KeyCode::Tab), &mut app, &mut state);
+        handle_key_event(key(KeyCode::BackTab), &mut app, &mut state);
+        if let AppMode::Import(ref form) = app.mode {
+            assert_eq!(form.focus, 0);
+        }
+    }
+
+    #[test]
+    fn test_import_type_source() {
+        let (mut app, mut state) = test_app_with_providers();
+        app.mode = AppMode::Import(ImportForm::new());
+        for c in "https://example.com/config.json".chars() {
+            handle_key_event(key(KeyCode::Char(c)), &mut app, &mut state);
+        }
+        if let AppMode::Import(ref form) = app.mode {
+            assert_eq!(form.source, "https://example.com/config.json");
+        }
+    }
+
+    #[test]
+    fn test_import_empty_source_shows_error() {
+        let (mut app, mut state) = test_app_with_providers();
+        app.mode = AppMode::Import(ImportForm::new());
+        handle_key_event(key(KeyCode::Enter), &mut app, &mut state);
+        if let AppMode::Import(ref form) = app.mode {
+            assert!(form.result_message.is_some());
+            assert!(form.result_message.as_ref().unwrap().contains("empty"));
+        }
+    }
+
+    #[test]
+    fn test_import_layer_toggle() {
+        let (mut app, mut state) = test_app_with_providers();
+        let mut form = ImportForm::new();
+        form.focus = 1; // layer field
+        app.mode = AppMode::Import(form);
+        handle_key_event(key(KeyCode::Down), &mut app, &mut state);
+        if let AppMode::Import(ref form) = app.mode {
+            assert_eq!(form.layer_index, 1); // global
+        }
+    }
+
+    #[test]
+    fn test_import_mode_toggle() {
+        let (mut app, mut state) = test_app_with_providers();
+        let mut form = ImportForm::new();
+        form.focus = 2; // mode field
+        app.mode = AppMode::Import(form);
+        handle_key_event(key(KeyCode::Down), &mut app, &mut state);
+        if let AppMode::Import(ref form) = app.mode {
+            assert_eq!(form.mode_index, 1); // replace
+        }
+    }
+
+    #[test]
+    fn test_import_backspace() {
+        let (mut app, mut state) = test_app_with_providers();
+        let mut form = ImportForm::new();
+        form.source = "test".to_string();
+        app.mode = AppMode::Import(form);
+        handle_key_event(key(KeyCode::Backspace), &mut app, &mut state);
+        if let AppMode::Import(ref form) = app.mode {
+            assert_eq!(form.source, "tes");
         }
     }
 }

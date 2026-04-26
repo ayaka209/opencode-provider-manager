@@ -13,7 +13,7 @@ use config_core::{ConfigLayer, ProviderConfig};
 use opencode_provider_manager::{app, auth, config_core};
 
 use crate::tui_app::{
-    AddProviderForm, App, EditProviderForm, KNOWN_SDKS, all_provider_ids,
+    AddProviderForm, App, EditProviderForm, ImportForm, KNOWN_SDKS, all_provider_ids,
     copy_source_list,
 };
 
@@ -160,7 +160,7 @@ pub fn render_provider_list(frame: &mut Frame, state: &AppState, app: &App) {
     };
     let dirty = if state.dirty { " ●" } else { "" };
     let status = format!(
-        " Layer: {layer}{dirty} | n:New | s:Save | d:Delete | r:Refresh | ?:Help | q:Quit | j/k:Nav | Enter:Select "
+        " Layer: {layer}{dirty} | n:New | i:Import | s:Save | d:Delete | r:Refresh | ?:Help | q:Quit | j/k:Nav | Enter:Select "
     );
     frame.render_widget(
         Paragraph::new(status).style(Style::default().fg(colors::DIM)),
@@ -605,6 +605,10 @@ pub fn render_help(frame: &mut Frame) {
             Span::raw("Add new provider"),
         ]),
         Line::from(vec![
+            Span::styled("  i        ", Style::default().fg(colors::PRIMARY)),
+            Span::raw("Import config (URL/file/snippet)"),
+        ]),
+        Line::from(vec![
             Span::styled("  r        ", Style::default().fg(colors::PRIMARY)),
             Span::raw("Refresh configs from disk"),
         ]),
@@ -1028,4 +1032,139 @@ pub fn render_edit_provider(frame: &mut ratatui::Frame, state: &AppState, form: 
             .style(Style::default().fg(colors::DIM)),
         status_area,
     );
+}
+
+/// Render the import wizard.
+pub fn render_import(frame: &mut ratatui::Frame, form: &ImportForm) {
+    let size = frame.area();
+    let dialog_width = 64.min(size.width.saturating_sub(4));
+    let dialog_height = 24.min(size.height.saturating_sub(2));
+    let x = (size.width.saturating_sub(dialog_width)) / 2;
+    let y = (size.height.saturating_sub(dialog_height)) / 2;
+
+    let dialog_area = ratatui::layout::Rect::new(x, y, dialog_width, dialog_height);
+
+    let layer_names = ["project", "global", "custom"];
+    let mode_names = ["merge (deep merge into existing)", "replace (overwrite entire layer)"];
+
+    let mut lines: Vec<Line> = vec![Line::from("")];
+
+    // Field 0: Source
+    {
+        let focused = form.focus == 0;
+        let cursor = if focused { "▶ " } else { "  " };
+        let cursor_char = if focused && form.source.is_empty() {
+            "│"
+        } else {
+            ""
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{cursor}Source: "), label_style(focused)),
+            Span::styled(form.source.clone(), Style::default()),
+            Span::styled(cursor_char, Style::default().fg(colors::PRIMARY)),
+        ]));
+        lines.push(Line::from(Span::styled(
+            "    URL, file path, or inline JSON/TOML/YAML",
+            Style::default().fg(colors::DIM),
+        )));
+        lines.push(Line::from(""));
+    }
+
+    // Field 1: Target Layer
+    {
+        let focused = form.focus == 1;
+        let cursor = if focused { "▶ " } else { "  " };
+        lines.push(Line::from(vec![Span::styled(
+            format!("{cursor}Target Layer: "),
+            label_style(focused),
+        )]));
+        for (i, name) in layer_names.iter().enumerate() {
+            let highlighted = focused && form.layer_index == i;
+            let marker = if highlighted { "  › " } else { "    " };
+            let style = if highlighted {
+                Style::default()
+                    .fg(colors::PRIMARY)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(colors::DIM)
+            };
+            lines.push(Line::from(vec![Span::styled(
+                format!("{marker}{name}"),
+                style,
+            )]));
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Field 2: Import Mode
+    {
+        let focused = form.focus == 2;
+        let cursor = if focused { "▶ " } else { "  " };
+        lines.push(Line::from(vec![Span::styled(
+            format!("{cursor}Import Mode: "),
+            label_style(focused),
+        )]));
+        for (i, name) in mode_names.iter().enumerate() {
+            let highlighted = focused && form.mode_index == i;
+            let marker = if highlighted { "  › " } else { "    " };
+            let style = if highlighted {
+                Style::default()
+                    .fg(colors::PRIMARY)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(colors::DIM)
+            };
+            lines.push(Line::from(vec![Span::styled(
+                format!("{marker}{name}"),
+                style,
+            )]));
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Field 3: Provider ID hint
+    {
+        let focused = form.focus == 3;
+        let cursor = if focused { "▶ " } else { "  " };
+        let cursor_char = if focused && form.provider_id.is_empty() {
+            "│"
+        } else {
+            ""
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{cursor}Provider ID: "), label_style(focused)),
+            Span::styled(form.provider_id.clone(), Style::default()),
+            Span::styled(cursor_char, Style::default().fg(colors::PRIMARY)),
+        ]));
+        lines.push(Line::from(""));
+    }
+
+    // Result message
+    if let Some(ref msg) = form.result_message {
+        let style = if msg.starts_with("Import failed") || msg.starts_with("Source") {
+            Style::default()
+                .fg(colors::ERROR)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(colors::SUCCESS)
+                .add_modifier(Modifier::BOLD)
+        };
+        lines.push(Line::from(Span::styled(format!("  {msg}"), style)));
+        lines.push(Line::from(""));
+    }
+
+    lines.push(Line::from(Span::styled(
+        " Tab:Next | ↑↓:Select | Enter:Import | Esc:Cancel",
+        Style::default().fg(colors::DIM),
+    )));
+
+    let dialog = Paragraph::new(lines)
+        .block(
+            Block::bordered()
+                .title(" Import Config ")
+                .border_style(Style::default().fg(colors::PRIMARY)),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(dialog, dialog_area);
 }
