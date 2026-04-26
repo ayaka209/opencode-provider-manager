@@ -156,9 +156,10 @@ fn main() {
         ),
     };
 
-    // Handle errors
+    // Handle errors — use Alternate ({:#}) to print the full error chain,
+    // not just the outermost context message.
     if let Err(e) = result {
-        eprintln!("Error: {}", e);
+        eprintln!("Error: {e:#}");
         process::exit(1);
     }
 }

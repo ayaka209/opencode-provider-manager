@@ -65,7 +65,15 @@ impl AppState {
     pub fn load_configs(&mut self) -> config_core::Result<()> {
         // Load global config
         self.global_config = if self.paths.global.exists() {
-            Some(config_core::jsonc::read_config(&self.paths.global)?)
+            Some(config_core::jsonc::read_config(&self.paths.global).map_err(|e| {
+                config_core::ConfigError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!(
+                        "Failed to read global config ({}): {e}",
+                        self.paths.global.display()
+                    ),
+                ))
+            })?)
         } else {
             None
         };
@@ -73,7 +81,15 @@ impl AppState {
         // Load custom config (from --config or OPENCODE_CONFIG)
         self.custom_config = if let Some(ref custom_path) = self.paths.custom {
             if custom_path.exists() {
-                Some(config_core::jsonc::read_config(custom_path)?)
+                Some(config_core::jsonc::read_config(custom_path).map_err(|e| {
+                    config_core::ConfigError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!(
+                            "Failed to read custom config ({}): {e}",
+                            custom_path.display()
+                        ),
+                    ))
+                })?)
             } else {
                 None
             }
@@ -84,7 +100,15 @@ impl AppState {
         // Load project config
         self.project_config = if let Some(ref project_path) = self.paths.project {
             if project_path.exists() {
-                Some(config_core::jsonc::read_config(project_path)?)
+                Some(config_core::jsonc::read_config(project_path).map_err(|e| {
+                    config_core::ConfigError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!(
+                            "Failed to read project config ({}): {e}",
+                            project_path.display()
+                        ),
+                    ))
+                })?)
             } else {
                 None
             }

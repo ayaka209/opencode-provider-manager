@@ -42,8 +42,14 @@ impl JsoncHandler {
 
     /// Read and parse a JSONC file.
     pub fn read_file(path: &Path) -> Result<Self> {
-        let source = std::fs::read_to_string(path).map_err(|_| ConfigError::FileNotFound {
-            path: path.display().to_string(),
+        let source = std::fs::read_to_string(path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                ConfigError::FileNotFound {
+                    path: path.display().to_string(),
+                }
+            } else {
+                ConfigError::Io(e)
+            }
         })?;
         Self::parse(&source)
     }
@@ -116,8 +122,14 @@ fn json_value_to_serde(value: &jsonc_parser::JsonValue) -> Result<serde_json::Va
 
 /// Read a config file (JSONC or JSON) and return clean JSON for deserialization.
 pub fn read_config_to_json(path: &Path) -> Result<String> {
-    let source = std::fs::read_to_string(path).map_err(|_| ConfigError::FileNotFound {
-        path: path.display().to_string(),
+    let source = std::fs::read_to_string(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            ConfigError::FileNotFound {
+                path: path.display().to_string(),
+            }
+        } else {
+            ConfigError::Io(e)
+        }
     })?;
 
     let handler = JsoncHandler::parse(&source)?;
