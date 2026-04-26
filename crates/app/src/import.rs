@@ -198,9 +198,42 @@ fn parse_models_dev_directory(
 }
 
 fn parse_import_url(url: &str, provider_id_hint: Option<&str>) -> Result<OpenCodeConfig> {
-    if let Some((owner, repo, branch, path, is_tree)) = parse_github_url(url) {
-        if is_tree {
-            return parse_github_directory(&owner, &repo, &branch, &path, provider_id_hint, url);
+    // Try all possible branch/depth splits for GitHub tree URLs.
+    // Branch names can contain slashes (e.g. "feat/Volcano_Engine"), so a
+    // simple split would mis-parse the branch boundary.
+    if let Some(candidates) = parse_github_tree_candidates(url) {
+        // Try each candidate (shortest branch first) until one resolves.
+        // We probe the GitHub Contents API — a 404 means wrong split.
+        let mut last_err = None;
+        for (owner, repo, branch, path) in candidates {
+            match github_contents(&owner, &repo, &branch, &path) {
+                Ok(entries) => {
+                    // Found the right split — continue with the full parse
+                    return parse_github_directory_with_entries(
+                        &owner, &repo, &branch, &path,
+                        entries, provider_id_hint, url,
+                    );
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    continue;
+                }
+            }
+        }
+        // All candidates failed
+        return Err(last_err.unwrap_or_else(|| {
+            AppError::Import("Could not resolve GitHub tree URL".to_string())
+        }));
+    }
+
+    // Non-tree GitHub URL or non-GitHub URL
+    if let Some((_owner, _repo, _branch, _path, is_tree)) = parse_github_url(url) {
+        if !is_tree {
+            // Raw file URL — just download it
+            let text = http_get_text(url)?;
+            let stem_hint = url_path_stem(url);
+            let hint = provider_id_hint.or(stem_hint.as_deref());
+            return parse_import_snippet(&text, hint, Some(url));
         }
     }
 
@@ -210,15 +243,48 @@ fn parse_import_url(url: &str, provider_id_hint: Option<&str>) -> Result<OpenCod
     parse_import_snippet(&text, hint, Some(url))
 }
 
-fn parse_github_directory(
+/// For a GitHub tree URL, return all possible (owner, repo, branch, path)
+/// candidates ordered by shortest branch name first.
+fn parse_github_tree_candidates(url: &str) -> Option<Vec<(String, String, String, String)>> {
+    let rest = url.strip_prefix("https://github.com/")?;
+    let parts: Vec<&str> = rest.split('/').collect();
+    if parts.len() < 5 {
+        return None;
+    }
+    let owner = parts[0].to_string();
+    let repo = parts[1].to_string();
+    let kind = parts[2];
+    if kind != "tree" {
+        return None;
+    }
+
+    // parts[3..] = branch_segment_1 / branch_segment_2 / ... / path_remaining
+    // Try: branch = parts[3], path = parts[4..]
+    //      branch = parts[3..4], path = parts[5..]
+    //      etc.
+    let remaining = &parts[3..];
+    let mut candidates = Vec::new();
+    for depth in 1..remaining.len() {
+        let branch = remaining[..depth].join("/");
+        let path = remaining[depth..].join("/");
+        if !path.is_empty() {
+            candidates.push((owner.clone(), repo.clone(), branch, path));
+        }
+    }
+    // Sort by branch length (shortest first) to prefer simpler branch names
+    candidates.sort_by_key(|c| c.2.len());
+    Some(candidates)
+}
+
+fn parse_github_directory_with_entries(
     owner: &str,
     repo: &str,
     branch: &str,
     path: &str,
+    entries: Vec<GithubContentEntry>,
     provider_id_hint: Option<&str>,
     source_url: &str,
 ) -> Result<OpenCodeConfig> {
-    let entries = github_contents(owner, repo, branch, path)?;
     let provider_entry = entries
         .iter()
         .find(|entry| entry.name == "provider.toml" && entry.download_url.is_some());
