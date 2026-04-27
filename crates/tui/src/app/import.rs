@@ -447,17 +447,6 @@ fn models_dev_provider_from_value(value: Value) -> Result<ProviderConfig> {
     if let Some(api) = obj.get("api").and_then(Value::as_str) {
         options.insert("baseURL".to_string(), Value::String(api.to_string()));
     }
-    if let Some(env_name) = obj
-        .get("env")
-        .and_then(Value::as_array)
-        .and_then(|items| items.first())
-        .and_then(Value::as_str)
-    {
-        options.insert(
-            "apiKey".to_string(),
-            Value::String(format!("{{env:{env_name}}}")),
-        );
-    }
     if !options.is_empty() {
         provider.options = Some(options);
     }
@@ -867,10 +856,11 @@ output = ["text"]
                 .options
                 .as_ref()
                 .unwrap()
-                .get("apiKey")
+                .get("baseURL")
                 .and_then(Value::as_str),
-            Some("{env:XIAOMI_API_KEY}")
+            Some("https://token-plan-cn.xiaomimimo.com/v1")
         );
+        assert!(!provider.options.as_ref().unwrap().contains_key("apiKey"));
         assert!(
             provider
                 .models
