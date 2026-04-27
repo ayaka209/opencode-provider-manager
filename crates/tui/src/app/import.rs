@@ -201,9 +201,42 @@ fn parse_models_dev_directory(
 }
 
 fn parse_import_url(url: &str, provider_id_hint: Option<&str>) -> Result<OpenCodeConfig> {
-    if let Some((owner, repo, branch, path, is_tree)) = parse_github_url(url) {
-        if is_tree {
-            return parse_github_directory(&owner, &repo, &branch, &path, provider_id_hint, url);
+    // Try all possible branch/depth splits for GitHub tree URLs.
+    // Branch names can contain slashes (e.g. "feat/Volcano_Engine"), so a
+    // simple split would mis-parse the branch boundary.
+    if let Some(candidates) = parse_github_tree_candidates(url) {
+        // Try each candidate (shortest branch first) until one resolves.
+        // We probe the GitHub Contents API — a 404 means wrong split.
+        let mut last_err = None;
+        for (owner, repo, branch, path) in candidates {
+            match github_contents(&owner, &repo, &branch, &path) {
+                Ok(entries) => {
+                    // Found the right split — continue with the full parse
+                    return parse_github_directory_with_entries(
+                        &owner, &repo, &branch, &path,
+                        entries, provider_id_hint, url,
+                    );
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    continue;
+                }
+            }
+        }
+        // All candidates failed
+        return Err(last_err.unwrap_or_else(|| {
+            AppError::Import("Could not resolve GitHub tree URL".to_string())
+        }));
+    }
+
+    // Non-tree GitHub URL or non-GitHub URL
+    if let Some((_owner, _repo, _branch, _path, is_tree)) = parse_github_url(url) {
+        if !is_tree {
+            // Raw file URL — just download it
+            let text = http_get_text(url)?;
+            let stem_hint = url_path_stem(url);
+            let hint = provider_id_hint.or(stem_hint.as_deref());
+            return parse_import_snippet(&text, hint, Some(url));
         }
     }
 
@@ -213,15 +246,45 @@ fn parse_import_url(url: &str, provider_id_hint: Option<&str>) -> Result<OpenCod
     parse_import_snippet(&text, hint, Some(url))
 }
 
-fn parse_github_directory(
+/// For a GitHub tree URL, return all possible (owner, repo, branch, path)
+/// candidates ordered by shortest branch name first.
+fn parse_github_tree_candidates(url: &str) -> Option<Vec<(String, String, String, String)>> {
+    let rest = url.strip_prefix("https://github.com/")?;
+    let parts: Vec<&str> = rest.split('/').collect();
+    if parts.len() < 5 {
+        return None;
+    }
+    let owner = parts[0].to_string();
+    let repo = parts[1].to_string();
+    let kind = parts[2];
+    if kind != "tree" {
+        return None;
+    }
+
+    // parts[3..] = branch_segment_1 / branch_segment_2 / ... / path_remaining
+    let remaining = &parts[3..];
+    let mut candidates = Vec::new();
+    for depth in 1..remaining.len() {
+        let branch = remaining[..depth].join("/");
+        let path = remaining[depth..].join("/");
+        if !path.is_empty() {
+            candidates.push((owner.clone(), repo.clone(), branch, path));
+        }
+    }
+    // Sort by branch length (shortest first) to prefer simpler branch names
+    candidates.sort_by_key(|c| c.2.len());
+    Some(candidates)
+}
+
+fn parse_github_directory_with_entries(
     owner: &str,
     repo: &str,
     branch: &str,
     path: &str,
+    entries: Vec<GithubContentEntry>,
     provider_id_hint: Option<&str>,
     source_url: &str,
 ) -> Result<OpenCodeConfig> {
-    let entries = github_contents(owner, repo, branch, path)?;
     let provider_entry = entries
         .iter()
         .find(|entry| entry.name == "provider.toml" && entry.download_url.is_some());
@@ -234,27 +297,43 @@ fn parse_github_directory(
                 AppError::Import("GitHub provider path has no provider ID".to_string())
             })?;
 
-        let provider_text = http_get_text(provider_entry.download_url.as_ref().unwrap())?;
+        let provider_text = http_get_text(provider_entry.download_url.as_ref().unwrap())
+            .map_err(|e| {
+                AppError::Import(format!(
+                    "Failed to download provider.toml from GitHub: {e}"
+                ))
+            })?;
         let mut provider = models_dev_provider_from_value(parse_toml_value(&provider_text)?)?;
 
         let models_path = format!("{}/models", path.trim_end_matches('/'));
-        for model_entry in github_contents(owner, repo, branch, &models_path)? {
-            if model_entry.entry_type == "file" && is_importable_name(&model_entry.name) {
-                let Some(download_url) = model_entry.download_url else {
-                    continue;
-                };
-                let model_id = Path::new(&model_entry.name)
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .ok_or_else(|| {
-                        AppError::Import("Model URL has no usable file name".to_string())
-                    })?
-                    .to_string();
-                let model = model_from_value(parse_loose_value(&http_get_text(&download_url)?)?)?;
-                provider
-                    .models
-                    .get_or_insert_with(HashMap::new)
-                    .insert(model_id, model);
+        // models/ subdirectory is optional — don't error if it doesn't exist
+        if let Ok(model_entries) = github_contents(owner, repo, branch, &models_path) {
+            for model_entry in model_entries {
+                if model_entry.entry_type == "file" && is_importable_name(&model_entry.name) {
+                    let Some(download_url) = model_entry.download_url else {
+                        continue;
+                    };
+                    let model_id = Path::new(&model_entry.name)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .ok_or_else(|| {
+                            AppError::Import("Model URL has no usable file name".to_string())
+                        })?
+                        .to_string();
+                    let model = model_from_value(
+                        parse_loose_value(
+                            &http_get_text(&download_url).map_err(|e| {
+                                AppError::Import(format!(
+                                    "Failed to download model file {model_id}: {e}"
+                                ))
+                            })?,
+                        )?,
+                    )?;
+                    provider
+                        .models
+                        .get_or_insert_with(HashMap::new)
+                        .insert(model_id, model);
+                }
             }
         }
 
@@ -265,8 +344,14 @@ fn parse_github_directory(
     for entry in entries {
         if entry.entry_type == "file" && is_importable_name(&entry.name) {
             if let Some(download_url) = entry.download_url {
+                let text = http_get_text(&download_url).map_err(|e| {
+                    AppError::Import(format!(
+                        "Failed to download {} from GitHub: {e}",
+                        entry.name
+                    ))
+                })?;
                 let parsed = parse_import_snippet(
-                    &http_get_text(&download_url)?,
+                    &text,
                     provider_id_hint,
                     Some(&download_url),
                 )?;
@@ -571,8 +656,54 @@ fn github_contents(
 ) -> Result<Vec<GithubContentEntry>> {
     let api_url =
         format!("https://api.github.com/repos/{owner}/{repo}/contents/{path}?ref={branch}");
-    let text = http_get_text(&api_url)?;
-    serde_json::from_str::<Vec<GithubContentEntry>>(&text).map_err(AppError::from)
+    let response = reqwest::blocking::Client::new()
+        .get(&api_url)
+        .header(reqwest::header::USER_AGENT, "opencode-provider-manager")
+        .send()
+        .map_err(|e| {
+            AppError::Import(format!(
+                "Failed to reach GitHub API ({}): {e}",
+                github_short_path(owner, repo, branch, path)
+            ))
+        })?;
+
+    let status = response.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Err(AppError::Import(format!(
+            "GitHub path not found: {} (branch: {branch})",
+            github_short_path(owner, repo, branch, path)
+        )));
+    }
+    if status == reqwest::StatusCode::FORBIDDEN {
+        return Err(AppError::Import(format!(
+            "GitHub API rate limit hit. Unauthenticated requests are limited to 60/hour.\n  \
+             Set GITHUB_TOKEN env var or wait and retry.\n  \
+             Path: {}",
+            github_short_path(owner, repo, branch, path)
+        )));
+    }
+    if !status.is_success() {
+        return Err(AppError::Import(format!(
+            "GitHub API returned {status} for: {}",
+            github_short_path(owner, repo, branch, path)
+        )));
+    }
+
+    let text = response.text().map_err(|e| {
+        AppError::Import(format!(
+            "Failed to read GitHub response: {e}"
+        ))
+    })?;
+    serde_json::from_str::<Vec<GithubContentEntry>>(&text).map_err(|e| {
+        AppError::Import(format!(
+            "Failed to parse GitHub directory listing: {e}\n  \
+             The path may point to a file, not a directory. Try a raw file URL instead."
+        ))
+    })
+}
+
+fn github_short_path(owner: &str, repo: &str, branch: &str, path: &str) -> String {
+    format!("{owner}/{repo}/{branch}/{path}")
 }
 
 #[derive(Debug, Deserialize)]
@@ -747,5 +878,78 @@ output = ["text"]
                 .unwrap()
                 .contains_key("mimo-v2-pro")
         );
+    }
+
+    #[test]
+    fn test_parse_github_url_simple_branch() {
+        let result = parse_github_url(
+            "https://github.com/owner/repo/tree/main/providers/my-provider",
+        );
+        let (owner, repo, branch, path, is_tree) = result.unwrap();
+        assert_eq!(owner, "owner");
+        assert_eq!(repo, "repo");
+        assert_eq!(branch, "main");
+        assert_eq!(path, "providers/my-provider");
+        assert!(is_tree);
+    }
+
+    #[test]
+    fn test_parse_github_url_blob_not_tree() {
+        let result = parse_github_url(
+            "https://github.com/owner/repo/blob/main/file.toml",
+        );
+        let (_, _, _, _, is_tree) = result.unwrap();
+        assert!(!is_tree);
+    }
+
+    #[test]
+    fn test_github_tree_candidates_simple_branch() {
+        let candidates = parse_github_tree_candidates(
+            "https://github.com/owner/repo/tree/main/providers/my-provider",
+        ).unwrap();
+
+        // Should have candidates with different branch depths
+        assert!(!candidates.is_empty());
+
+        // First candidate (shortest branch) should be branch=main
+        let (owner, repo, branch, path) = &candidates[0];
+        assert_eq!(owner, "owner");
+        assert_eq!(repo, "repo");
+        assert_eq!(branch, "main");
+        assert_eq!(path, "providers/my-provider");
+    }
+
+    #[test]
+    fn test_github_tree_candidates_slash_branch() {
+        // URL: .../tree/feat/Volcano_Engine/providers/volcano_engine_cn
+        // branch could be "feat" or "feat/Volcano_Engine"
+        let candidates = parse_github_tree_candidates(
+            "https://github.com/shengjian20/models.dev/tree/feat/Volcano_Engine/providers/volcano_engine_cn",
+        ).unwrap();
+
+        // Should have multiple candidates
+        assert!(candidates.len() >= 2);
+
+        // Sorted by branch length, so "feat" (4) comes before "feat/Volcano_Engine" (18)
+        assert_eq!(candidates[0].2, "feat");
+        assert_eq!(candidates[0].3, "Volcano_Engine/providers/volcano_engine_cn");
+        assert_eq!(candidates[1].2, "feat/Volcano_Engine");
+        assert_eq!(candidates[1].3, "providers/volcano_engine_cn");
+    }
+
+    #[test]
+    fn test_github_tree_candidates_not_tree_url() {
+        let result = parse_github_tree_candidates(
+            "https://github.com/owner/repo/blob/main/file.toml",
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_github_tree_candidates_too_short() {
+        let result = parse_github_tree_candidates(
+            "https://github.com/owner/repo/tree/main",
+        );
+        assert!(result.is_none());
     }
 }

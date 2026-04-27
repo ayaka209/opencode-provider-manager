@@ -883,4 +883,67 @@ output = ["text"]
                 .contains_key("mimo-v2-pro")
         );
     }
+
+    #[test]
+    fn test_parse_github_url_simple_branch() {
+        let result = parse_github_url(
+            "https://github.com/owner/repo/tree/main/providers/my-provider",
+        );
+        let (owner, repo, branch, path, is_tree) = result.unwrap();
+        assert_eq!(owner, "owner");
+        assert_eq!(repo, "repo");
+        assert_eq!(branch, "main");
+        assert_eq!(path, "providers/my-provider");
+        assert!(is_tree);
+    }
+
+    #[test]
+    fn test_parse_github_url_blob_not_tree() {
+        let result = parse_github_url(
+            "https://github.com/owner/repo/blob/main/file.toml",
+        );
+        let (_, _, _, _, is_tree) = result.unwrap();
+        assert!(!is_tree);
+    }
+
+    #[test]
+    fn test_github_tree_candidates_simple_branch() {
+        let candidates = parse_github_tree_candidates(
+            "https://github.com/owner/repo/tree/main/providers/my-provider",
+        ).unwrap();
+        assert!(!candidates.is_empty());
+        let (owner, repo, branch, path) = &candidates[0];
+        assert_eq!(owner, "owner");
+        assert_eq!(repo, "repo");
+        assert_eq!(branch, "main");
+        assert_eq!(path, "providers/my-provider");
+    }
+
+    #[test]
+    fn test_github_tree_candidates_slash_branch() {
+        let candidates = parse_github_tree_candidates(
+            "https://github.com/shengjian20/models.dev/tree/feat/Volcano_Engine/providers/volcano_engine_cn",
+        ).unwrap();
+        assert!(candidates.len() >= 2);
+        assert_eq!(candidates[0].2, "feat");
+        assert_eq!(candidates[0].3, "Volcano_Engine/providers/volcano_engine_cn");
+        assert_eq!(candidates[1].2, "feat/Volcano_Engine");
+        assert_eq!(candidates[1].3, "providers/volcano_engine_cn");
+    }
+
+    #[test]
+    fn test_github_tree_candidates_not_tree_url() {
+        let result = parse_github_tree_candidates(
+            "https://github.com/owner/repo/blob/main/file.toml",
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_github_tree_candidates_too_short() {
+        let result = parse_github_tree_candidates(
+            "https://github.com/owner/repo/tree/main",
+        );
+        assert!(result.is_none());
+    }
 }
